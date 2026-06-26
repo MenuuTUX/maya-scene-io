@@ -1,0 +1,18 @@
+schema_version = "1.0.0"
+
+id = "maya_scene_importer"
+version = "1.0.0"
+name = "Maya Scene IO (.ma / .mb)"
+tagline = "Import & export Maya scenes: mesh, rig, skin, anim, materials"
+maintainer = "Shibashish Das <shibashish.das07@gmail.com>"
+type = "add-on"
+
+tags = ["Import-Export", "Rigging", "Pipeline"]
+
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+# Pure-Python; .ma works on every platform with no Maya. .mb uses a local Maya.
