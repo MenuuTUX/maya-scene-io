@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "maya_scene_importer"
-version = "1.0.0"
+version = "1.0.1"
 name = "Maya Scene IO (.ma / .mb)"
 tagline = "Import & export Maya scenes: mesh, rig, skin, anim, materials"
 maintainer = "Shibashish Das <shibashish.das07@gmail.com>"

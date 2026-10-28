@@ -5,9 +5,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 
 ## Unreleased
 
+## 1.0.1
+
 ### Fixed
 
-- Maya bridge failing on older Maya (tested path: 2014). The FBX export now
+- Maya bridge failing on older Maya. The FBX export now
   tries every FBX version the plugin accepts, and falls back to converting the
   file to `.ma` and importing it natively.
 - Non-ASCII paths (for example Chinese folders) on Windows: paths are now

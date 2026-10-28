@@ -74,6 +74,11 @@ Works the same on Windows, macOS and Linux. You need Blender 4.2 or newer.
    drop-down arrow (top right), choose `Install from Disk...`, and pick the zip.
 3. Make sure the add-on is ticked in `Edit > Preferences > Add-ons`.
 
+If you previously copied the individual `.py` files into Blender's
+`scripts/addons` folder, remove those copies and restart Blender. The files
+belong together inside the extension ZIP; Blender can mistake loose support
+files for separate add-ons and warn that they are missing `bl_info`.
+
 ## Using it
 
 Import from `File > Import > Maya Scene`, export from `File > Export > Maya
@@ -109,8 +114,9 @@ Picking the `bin` folder, or the Maya install folder, works as well. The
 - **"Maya was not found"**: set the path as described above.
 - **"Maya FBX export failed"**: some older Maya versions (2014 and similar) ship
   an FBX plugin that rejects the export. The add-on then converts the file to
-  `.ma` with Maya and imports that natively, so you normally still get your
-  scene; a warning tells you this happened.
+  `.ma` with Maya and imports that natively. A warning tells you this happened;
+  complex scenes may lose features or import slowly. Include the console output
+  and a sample scene in a bug report if the result is incorrect.
 - **Anything else**: on Windows open `Window > Toggle System Console` in Blender
   (on macOS and Linux start Blender from a terminal), repeat the import, and
   attach the printed text to a [bug report](https://github.com/MenuuTUX/maya-scene-io/issues) together with your
