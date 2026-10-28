@@ -13,6 +13,7 @@ optional enhancement rather than a hard requirement.
 """
 
 import glob
+import locale
 import os
 import re
 import subprocess
@@ -122,6 +123,18 @@ def _summarise(out, err):
     return text or "\n".join(lines[-8:]).strip() or "(no output)"
 
 
+def _decode(data):
+    """Maya prints in the system code page (GBK, cp1252, ...) even when asked
+    for UTF-8, so try UTF-8 first, then the locale, and never raise."""
+    data = data or b""
+    for enc in ("utf-8", locale.getpreferredencoding(False)):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            pass
+    return data.decode("utf-8", errors="replace")
+
+
 def _literal(value):
     """An ASCII-only Python literal that is valid in Maya's Python 2 and 3."""
     if isinstance(value, str):
@@ -150,10 +163,11 @@ def _run(exe, script_text, values, timeout):
         if sys.platform.startswith("win"):
             kw["creationflags"] = 0x08000000      # CREATE_NO_WINDOW
         try:
-            return subprocess.run([exe, script], env=env,
-                                  capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace",
-                                  timeout=timeout, **kw)
+            proc = subprocess.run([exe, script], env=env,
+                                  capture_output=True, timeout=timeout, **kw)
+            proc.stdout = _decode(proc.stdout)
+            proc.stderr = _decode(proc.stderr)
+            return proc
         except subprocess.TimeoutExpired:
             raise RuntimeError("Maya took longer than %d s and was stopped."
                                % timeout)
