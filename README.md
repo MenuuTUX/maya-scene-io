@@ -1,7 +1,12 @@
 # Maya Scene IO
 
+<p align="center">
+  <img src="assets/banner.png" alt="Maya Scene IO: import and export Maya .ma and .mb scenes in Blender" width="860">
+</p>
+
 ![Blender 4.2+](https://img.shields.io/badge/Blender-4.2%2B-orange)
 ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)
+![Platforms](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
 A Blender add-on for moving Maya scenes into Blender, and back out again. It
 reads and writes Maya ASCII (`.ma`) natively, and handles Maya Binary (`.mb`)
