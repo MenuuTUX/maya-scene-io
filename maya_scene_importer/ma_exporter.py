@@ -14,6 +14,7 @@ shapes.
 """
 
 import os
+import re
 import math
 
 import bpy
@@ -140,7 +141,7 @@ def export(filepath, opts, context, report=None):
     # -- connections (materials -> shading engines -> shapes) -------------
     _emit_material_connections(w, mat_nodes, sg_members)
 
-    with open(filepath, 'w', encoding='utf-8') as fh:
+    with open(filepath, 'w', encoding='utf-8', newline='\n') as fh:
         fh.write("".join(out))
 
     log('INFO', "exported %d meshes, %d joints, %d skins, %d blendShapes, %d "
@@ -424,6 +425,7 @@ def _emit_blendshape(w, obj, info, uniq, em3):
     bsname = uniq(obj.name + "_blendShape")
     w('createNode blendShape -n "%s";\n' % bsname)
     count = 0
+    aliases = []
     for ti, kb in enumerate(keys.key_blocks[1:]):
         deltas = []
         for vi, (b, p) in enumerate(zip(basis.data, kb.data)):
@@ -440,9 +442,12 @@ def _emit_blendshape(w, obj, info, uniq, em3):
           % (ti, len(deltas), pts))
         w('\tsetAttr ".it[0].itg[%d].iti[6000].ict" -type "componentList" %d %s;\n'
           % (ti, len(deltas), comp))
+        aliases.append('"%s" "weight[%d]"' % (re.sub(r'\W', '_', kb.name), ti))
         count += 1
     if not count:
         return 0
+    w('\tsetAttr ".aal" -type "attributeAlias" {%s};\n'
+      % ", ".join(a.replace('" "', '","') for a in aliases))
     # chain the blendShape ahead of the skinCluster if the mesh is skinned,
     # otherwise drive the shape directly
     if info.get('skin'):

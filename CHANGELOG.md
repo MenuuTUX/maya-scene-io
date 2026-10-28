@@ -12,6 +12,13 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
   file to `.ma` and importing it natively.
 - Temp files were left open, which stopped Maya writing to them on Windows.
 - Maya errors are now summarised instead of dumping Maya's start-up log.
+- Windows: exported `.ma` files are written with `\n` line endings, not `\r\n`.
+- `.ma` files saved with a BOM, `\r\n` endings, or the Windows code page
+  (older Maya) now parse correctly.
+- Linux and case-sensitive macOS volumes: the texture referenced by Maya is now
+  matched case-insensitively, as it is on Windows.
+- Non-ASCII names (accents, CJK) are kept instead of replaced with `_`.
+- Blend shape names are preserved on export instead of becoming `target_N`.
 
 ### Changed
 

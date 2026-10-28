@@ -205,8 +205,14 @@ class MAParser:
         self._select = None      # node named by an explicit `select`
 
     def parse_file(self, path):
-        with open(path, 'r', encoding='utf-8', errors='replace') as fh:
-            return self.parse_text(fh.read())
+        with open(path, 'rb') as fh:
+            raw = fh.read()
+        try:
+            text = raw.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            # older Maya on Windows saved in the system code page
+            text = raw.decode('cp1252', errors='replace')
+        return self.parse_text(text.replace('\r\n', '\n').replace('\r', '\n'))
 
     def parse_text(self, text):
         for stmt in _iter_statements(text):

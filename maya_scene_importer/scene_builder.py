@@ -317,7 +317,7 @@ def _build_mesh(md, gm, mat_lookup, mesh_sg, collection, want_normals, hide):
 # ---------------------------------------------------------------------------
 def _sanitize(name):
     """Make a filename safe and friendly for a Blender datablock name."""
-    name = re.sub(r'[^0-9A-Za-z_.\- ]+', '_', name).strip(' _')
+    name = re.sub(r'[^\w.\- ]+', '_', name).strip(' _')
     return name[:58]
 
 
@@ -538,9 +538,12 @@ def _build_material(md, basedir):
         if not path and slot == 'baseColor' and 'baseColor' in md.maya_textures:
             # fall back to the exact map referenced by Maya (remapped to basedir)
             fn = re.split(r'[\\/]', md.maya_textures['baseColor'])[-1]
-            cand = os.path.join(basedir, fn)
-            if os.path.exists(cand):
-                path = cand
+            try:
+                names = {f.lower(): f for f in os.listdir(basedir)}
+            except OSError:
+                names = {}
+            if fn.lower() in names:       # case-insensitive, as on Windows
+                path = os.path.join(basedir, names[fn.lower()])
         img = _load_image(path, non_color)
         if not img:
             return None
