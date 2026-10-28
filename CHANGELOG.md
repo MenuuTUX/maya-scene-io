@@ -10,6 +10,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Maya bridge failing on older Maya (tested path: 2014). The FBX export now
   tries every FBX version the plugin accepts, and falls back to converting the
   file to `.ma` and importing it natively.
+- Non-ASCII paths (for example Chinese folders) on Windows: paths are now
+  written into the Maya script as escaped literals instead of being passed on
+  the command line, where mayapy mangled them. Maya's output is decoded as
+  UTF-8 with replacement, so a locale-encoded message can no longer hide the
+  real error. Thanks to HeiShan for the report and patch.
 - Temp files were left open, which stopped Maya writing to them on Windows.
 - Maya errors are now summarised instead of dumping Maya's start-up log.
 - Windows: exported `.ma` files are written with `\n` line endings, not `\r\n`.
