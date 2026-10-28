@@ -13,6 +13,7 @@ optional enhancement rather than a hard requirement.
 """
 
 import glob
+import locale
 import os
 import re
 import subprocess
@@ -96,10 +97,29 @@ def available(explicit=""):
     return bool(find_mayapy(explicit))
 
 
+def _tmp_dir():
+    """A temp folder whose path is pure ASCII when one exists. Maya reads MEL
+    strings in the system code page, so an FBX written under a non-ASCII
+    Windows user folder can fail; Public/ProgramData/tmp are safe."""
+    base = tempfile.gettempdir()
+    if base.isascii():
+        return base
+    for cand in (os.environ.get("PUBLIC"), os.environ.get("ProgramData"),
+                 "/tmp"):
+        if cand and cand.isascii() and os.path.isdir(cand):
+            try:
+                path = os.path.join(cand, "mayaio_tmp")
+                os.makedirs(path, exist_ok=True)
+                return path
+            except OSError:
+                pass
+    return base
+
+
 def _tmp_path(suffix):
     """A temp file path with the descriptor closed (Windows cannot overwrite a
     file that is still open)."""
-    fd, path = tempfile.mkstemp(suffix=suffix)
+    fd, path = tempfile.mkstemp(suffix=suffix, dir=_tmp_dir())
     os.close(fd)
     return path
 
@@ -113,7 +133,7 @@ def _remove(path):
 
 def _summarise(out, err):
     """Pull the real error out of Maya's startup chatter."""
-    lines = (out + "\n" + err).splitlines()
+    lines = ((out or "") + "\n" + (err or "")).splitlines()
     keep = [l for l in lines
             if l.startswith(("MAYAIO", "Error", "Traceback", "RuntimeError",
                              "  File", "// Error", "# Error"))
@@ -122,22 +142,51 @@ def _summarise(out, err):
     return text or "\n".join(lines[-8:]).strip() or "(no output)"
 
 
-def _run(exe, script_text, args, timeout):
-    """Run a Python script under mayapy; returns the CompletedProcess."""
+def _decode(data):
+    """Maya prints in the system code page (GBK, cp1252, ...) even when asked
+    for UTF-8, so try UTF-8 first, then the locale, and never raise."""
+    data = data or b""
+    for enc in ("utf-8", locale.getpreferredencoding(False)):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            pass
+    return data.decode("utf-8", errors="replace")
+
+
+def _literal(value):
+    """An ASCII-only Python literal that is valid in Maya's Python 2 and 3."""
+    if isinstance(value, str):
+        return "u" + ascii(value)
+    return repr(value)
+
+
+def _run(exe, script_text, values, timeout):
+    """Run a Python script under mayapy; returns the CompletedProcess.
+
+    ``values`` become variables at the top of the script. They are NOT passed on
+    the command line: on Windows mayapy re-reads its arguments through the ANSI
+    code page, so a non-ASCII path (Chinese, accented, ...) arrives mangled and
+    Maya reports the file as missing. ASCII-escaped literals are immune to that.
+    """
+    head = "".join("%s = %s\n" % (k, _literal(v)) for k, v in values.items())
     fd, script = tempfile.mkstemp(suffix=".py", text=True)
     try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(script_text)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(head + script_text)
         # Blender's own Python variables would break Maya's interpreter
         env = {k: v for k, v in os.environ.items()
                if k not in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP")}
+        env["PYTHONIOENCODING"] = "utf-8"
         kw = {}
         if sys.platform.startswith("win"):
             kw["creationflags"] = 0x08000000      # CREATE_NO_WINDOW
         try:
-            return subprocess.run([exe, script] + list(args), env=env,
-                                  capture_output=True, text=True,
-                                  errors="replace", timeout=timeout, **kw)
+            proc = subprocess.run([exe, script], env=env,
+                                  capture_output=True, timeout=timeout, **kw)
+            proc.stdout = _decode(proc.stdout)
+            proc.stderr = _decode(proc.stderr)
+            return proc
         except subprocess.TimeoutExpired:
             raise RuntimeError("Maya took longer than %d s and was stopped."
                                % timeout)
@@ -193,7 +242,6 @@ def convert(src, dst, mayapy="", timeout=600):
         raise RuntimeError(_NO_MAYA)
     dst_type = "mayaBinary" if dst.lower().endswith(".mb") else "mayaAscii"
     body = _PRELUDE + r"""
-src, dst, dst_type = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     open_scene(src)
     cmds.file(rename=dst)
@@ -202,7 +250,8 @@ except Exception:
     _fail("Maya could not convert the file")
 finish()
 """
-    proc = _run(exe, body, [src, dst, dst_type], timeout)
+    proc = _run(exe, body, {"src": src, "dst": dst, "dst_type": dst_type},
+                timeout)
     if proc.returncode != 0 or not os.path.isfile(dst) \
             or os.path.getsize(dst) == 0:
         raise RuntimeError("Maya conversion failed:\n%s"
@@ -213,7 +262,7 @@ finish()
 def mb_to_ma(src_mb, mayapy=""):
     """Convert a .mb to a temporary .ma and return its path."""
     # keep the original name so the imported objects are named after the file
-    folder = tempfile.mkdtemp(prefix="mayaio_")
+    folder = tempfile.mkdtemp(prefix="mayaio_", dir=_tmp_dir())
     tmp = os.path.join(folder, os.path.splitext(os.path.basename(src_mb))[0]
                        + ".ma")
     try:
@@ -240,7 +289,6 @@ def discard_temp(path):
 # importer) handles any .ma/.mb file far more robustly than parsing it by hand.
 # ---------------------------------------------------------------------------
 _FBX_EXPORT_BODY = r"""
-src, dst, bake = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
 try:
     open_scene(src)
     if not cmds.pluginInfo("fbxmaya", q=True, loaded=True):
@@ -301,7 +349,8 @@ def to_fbx(src, mayapy="", bake_animation=True, timeout=1800):
     dst = _tmp_path(".fbx")
     try:
         proc = _run(exe, _PRELUDE + _FBX_EXPORT_BODY,
-                    [src, dst, "1" if bake_animation else "0"], timeout)
+                    {"src": src, "dst": dst, "bake": bool(bake_animation)},
+                    timeout)
         if proc.returncode != 0 or os.path.getsize(dst) == 0:
             raise RuntimeError("Maya FBX export failed:\n%s"
                                % _summarise(proc.stdout, proc.stderr))
