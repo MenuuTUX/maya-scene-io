@@ -97,10 +97,29 @@ def available(explicit=""):
     return bool(find_mayapy(explicit))
 
 
+def _tmp_dir():
+    """A temp folder whose path is pure ASCII when one exists. Maya reads MEL
+    strings in the system code page, so an FBX written under a non-ASCII
+    Windows user folder can fail; Public/ProgramData/tmp are safe."""
+    base = tempfile.gettempdir()
+    if base.isascii():
+        return base
+    for cand in (os.environ.get("PUBLIC"), os.environ.get("ProgramData"),
+                 "/tmp"):
+        if cand and cand.isascii() and os.path.isdir(cand):
+            try:
+                path = os.path.join(cand, "mayaio_tmp")
+                os.makedirs(path, exist_ok=True)
+                return path
+            except OSError:
+                pass
+    return base
+
+
 def _tmp_path(suffix):
     """A temp file path with the descriptor closed (Windows cannot overwrite a
     file that is still open)."""
-    fd, path = tempfile.mkstemp(suffix=suffix)
+    fd, path = tempfile.mkstemp(suffix=suffix, dir=_tmp_dir())
     os.close(fd)
     return path
 
@@ -243,7 +262,7 @@ finish()
 def mb_to_ma(src_mb, mayapy=""):
     """Convert a .mb to a temporary .ma and return its path."""
     # keep the original name so the imported objects are named after the file
-    folder = tempfile.mkdtemp(prefix="mayaio_")
+    folder = tempfile.mkdtemp(prefix="mayaio_", dir=_tmp_dir())
     tmp = os.path.join(folder, os.path.splitext(os.path.basename(src_mb))[0]
                        + ".ma")
     try:
