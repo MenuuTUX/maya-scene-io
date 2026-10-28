@@ -3,6 +3,25 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Maya bridge failing on older Maya (tested path: 2014). The FBX export now
+  tries every FBX version the plugin accepts, and falls back to converting the
+  file to `.ma` and importing it natively.
+- Temp files were left open, which stopped Maya writing to them on Windows.
+- Maya errors are now summarised instead of dumping Maya's start-up log.
+
+### Changed
+
+- `mayapy` is found in any installed Maya version (not a fixed list) on
+  Windows, macOS and Linux, and via `MAYA_LOCATION`. The preference accepts the
+  file, the `bin` folder or the install folder.
+- `mayapy` runs without a console window on Windows and without Blender's
+  `PYTHONHOME` / `PYTHONPATH`.
+- Rewrote the install and `.mb` setup instructions for newcomers.
+
 ## 1.0.0
 
 First public release.

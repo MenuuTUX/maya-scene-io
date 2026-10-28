@@ -180,35 +180,50 @@ class IMPORT_SCENE_OT_maya_ascii(bpy.types.Operator, ImportHelper):
             use_maya = True               # .mb cannot be parsed natively
 
         t0 = time.time()
+        tmp_ma = None
         if use_maya:
             if not maya_bridge.available(mayapy):
                 self.report({'ERROR'},
-                            "This needs a local Maya. Set mayapy in the add-on "
-                            "preferences, or choose Native for standard .ma.")
+                            "Maya was not found. Set the mayapy path in Edit > "
+                            "Preferences > Add-ons > Maya Scene IO, or choose "
+                            "Native for a standard .ma file.")
                 return {'CANCELLED'}
+            fbx = None
             try:
                 fbx = maya_bridge.to_fbx(path, mayapy=mayapy)
             except Exception as exc:
-                traceback.print_exc()
-                self.report({'ERROR'}, str(exc))
-                return {'CANCELLED'}
-            try:
-                bpy.ops.import_scene.fbx(filepath=fbx,
-                                         automatic_bone_orientation=True,
-                                         use_custom_normals=True,
-                                         ignore_leaf_bones=True)
-            except Exception as exc:
-                traceback.print_exc()
-                self.report({'ERROR'}, "FBX import failed: %s" % exc)
-                return {'CANCELLED'}
-            finally:
+                print("[Maya bridge] FBX route failed:\n%s" % exc)
                 try:
-                    os.remove(fbx)
-                except OSError:
-                    pass
-            self.report({'INFO'}, "Imported via Maya bridge in %.1fs"
-                        % (time.time() - t0))
-            return {'FINISHED'}
+                    ma = maya_bridge.mb_to_ma(path, mayapy=mayapy)
+                except Exception as exc2:
+                    self.report({'ERROR'}, "%s\n(.ma conversion also failed: "
+                                "%s)" % (exc, exc2))
+                    return {'CANCELLED'}
+                # Maya's FBX plugin failed (common on old Maya); the converted
+                # .ma still goes through the native importer.
+                self.report({'WARNING'}, "Maya's FBX export failed; imported "
+                            "through a converted .ma instead (see console).")
+                path = ma
+                tmp_ma = ma
+                use_maya = False
+            if fbx:
+                try:
+                    bpy.ops.import_scene.fbx(filepath=fbx,
+                                             automatic_bone_orientation=True,
+                                             use_custom_normals=True,
+                                             ignore_leaf_bones=True)
+                except Exception as exc:
+                    traceback.print_exc()
+                    self.report({'ERROR'}, "FBX import failed: %s" % exc)
+                    return {'CANCELLED'}
+                finally:
+                    try:
+                        os.remove(fbx)
+                    except OSError:
+                        pass
+                self.report({'INFO'}, "Imported via Maya bridge in %.1fs"
+                            % (time.time() - t0))
+                return {'FINISHED'}
 
         # native path
         from . import scene_builder
@@ -220,6 +235,9 @@ class IMPORT_SCENE_OT_maya_ascii(bpy.types.Operator, ImportHelper):
                         "plugin nodes or is non-standard, try the Maya Bridge "
                         "method." % exc)
             return {'CANCELLED'}
+        finally:
+            if tmp_ma:
+                maya_bridge.discard_temp(tmp_ma)
 
         self.report({'INFO'}, "Imported (native) in %.1fs (%d meshes, %d bones)"
                     % (time.time() - t0, stats.get('meshes', 0),
@@ -288,7 +306,8 @@ class EXPORT_SCENE_OT_maya_ascii(bpy.types.Operator, ExportHelper):
         want_mb = self.export_format == 'MB' or out.lower().endswith(".mb")
         ma_path = out
         if want_mb:
-            ma_path = tempfile.mkstemp(suffix=".ma")[1]
+            fd, ma_path = tempfile.mkstemp(suffix=".ma")
+            os.close(fd)
 
         t0 = time.time()
         try:
@@ -331,14 +350,19 @@ class MayaSceneImporterPrefs(bpy.types.AddonPreferences):
     def draw(self, context):
         layout = self.layout
         layout.label(text=".ma import/export works with no Maya installed.")
-        layout.label(text="Set mayapy below only to enable Maya Binary (.mb):")
+        layout.label(text="Only for Maya Binary (.mb) or the Maya bridge: point")
+        layout.label(text="this at mayapy, a program in Maya's bin folder")
+        layout.label(text="(mayapy.exe on Windows). Picking the bin folder works too.")
         layout.prop(self, "maya_path")
         from . import maya_bridge
         found = maya_bridge.find_mayapy(self.maya_path)
         if found:
             layout.label(text="Maya found: %s" % found, icon='CHECKMARK')
+        elif self.maya_path:
+            layout.label(text="No mayapy at that path", icon='ERROR')
         else:
-            layout.label(text="Maya not found (.mb disabled)", icon='INFO')
+            layout.label(text="Maya not found automatically (.mb disabled)",
+                         icon='INFO')
 
 
 def _prefs():

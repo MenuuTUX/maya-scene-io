@@ -61,9 +61,13 @@ Export:
 
 ## Install
 
-Blender 4.2 or newer. Grab the zip from the Releases page, then
-`Edit > Preferences > Get Extensions > drop-down > Install from Disk`. Or build
-it yourself (below) and install the zip the same way.
+Works the same on Windows, macOS and Linux. You need Blender 4.2 or newer.
+
+1. Download `maya_scene_importer-x.y.z.zip` from the Releases page. **Do not
+   unzip it.** Blender installs the zip as-is.
+2. In Blender open `Edit > Preferences > Get Extensions`, click the small
+   drop-down arrow (top right), choose `Install from Disk...`, and pick the zip.
+3. Make sure the add-on is ticked in `Edit > Preferences > Add-ons`.
 
 ## Using it
 
@@ -71,9 +75,41 @@ Import from `File > Import > Maya Scene`, export from `File > Export > Maya
 Scene`. There is also a "Maya IO" tab in the 3D viewport sidebar (press N) with
 the same options and one-click buttons.
 
-For `.mb`, or to run the Maya bridge on any file, set the path to `mayapy` in
-`Edit > Preferences > Add-ons > Maya Scene IO`. Common install locations are
-detected automatically.
+### Plain `.ma` files
+
+Nothing else to set up. Pick `Native` (or leave it on `Auto`) and import.
+
+### `.mb` files and the Maya bridge
+
+These need Maya installed on the same computer. The add-on runs a small program
+that ships with Maya called `mayapy` (it is a Python interpreter inside Maya's
+`bin` folder). It never opens Maya's window.
+
+The add-on looks for Maya in the usual places and picks the newest version it
+finds, so you may not have to do anything. If the sidebar's "Maya Binary (.mb)"
+panel says Maya was not found, set the path yourself in
+`Edit > Preferences > Add-ons > Maya Scene IO`. You can pick any of these:
+
+| OS | `mayapy` is usually at |
+| --- | --- |
+| Windows | `C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe` |
+| macOS | `/Applications/Autodesk/maya2024/Maya.app/Contents/bin/mayapy` |
+| Linux | `/usr/autodesk/maya2024/bin/mayapy` |
+
+Picking the `bin` folder, or the Maya install folder, works as well. The
+`MAYA_LOCATION` environment variable is honoured too.
+
+## Troubleshooting
+
+- **"Maya was not found"**: set the path as described above.
+- **"Maya FBX export failed"**: some older Maya versions (2014 and similar) ship
+  an FBX plugin that rejects the export. The add-on then converts the file to
+  `.ma` with Maya and imports that natively, so you normally still get your
+  scene; a warning tells you this happened.
+- **Anything else**: on Windows open `Window > Toggle System Console` in Blender
+  (on macOS and Linux start Blender from a terminal), repeat the import, and
+  attach the printed text to a [bug report](https://github.com/MenuuTUX/maya-scene-io/issues) together with your
+  Maya and Blender versions.
 
 ## Limitations
 
