@@ -12,39 +12,76 @@ This mirrors how the Maya-dependent commercial importers work, but here it is an
 optional enhancement rather than a hard requirement.
 """
 
+import glob
 import os
+import re
 import subprocess
+import sys
 import tempfile
 
 
-_COMMON_MAYAPY = [
-    # Windows
-    r"C:/Program Files/Autodesk/Maya{ver}/bin/mayapy.exe",
-    # macOS
-    "/Applications/Autodesk/maya{ver}/Maya.app/Contents/bin/mayapy",
-    # Linux
-    "/usr/autodesk/maya{ver}/bin/mayapy",
-]
-_VERSIONS = ["2025", "2024", "2023", "2022", "2020", "2019", "2018"]
+def _version_key(path):
+    """Sort key so the newest Maya (highest year in the path) comes first."""
+    m = re.findall(r"(?:maya|Maya)(\d{4})", path)
+    return -int(m[-1]) if m else 0
+
+
+def _install_globs():
+    if sys.platform.startswith("win"):
+        roots = {os.environ.get("ProgramFiles", r"C:\Program Files"),
+                 os.environ.get("ProgramW6432", r"C:\Program Files")}
+        return [os.path.join(r, "Autodesk", "Maya*", "bin", "mayapy.exe")
+                for r in roots]
+    if sys.platform == "darwin":
+        return ["/Applications/Autodesk/maya*/Maya.app/Contents/bin/mayapy"]
+    return ["/usr/autodesk/maya*/bin/mayapy",
+            "/opt/autodesk/maya*/bin/mayapy",
+            "/usr/autodesk/maya*-x64/bin/mayapy"]
+
+
+def installed_mayapys():
+    """Every mayapy found in the standard install locations, newest first."""
+    found = []
+    loc = os.environ.get("MAYA_LOCATION")
+    if loc:
+        found += glob.glob(os.path.join(loc, "bin", "mayapy*"))
+        found += glob.glob(os.path.join(loc, "Contents", "bin", "mayapy"))
+    for pattern in _install_globs():
+        found += glob.glob(pattern)
+    found = [f for f in dict.fromkeys(found) if os.path.isfile(f)]
+    return sorted(found, key=_version_key)
+
+
+def _resolve(path):
+    """Turn whatever the user picked into a mayapy file, or ''."""
+    path = os.path.normpath(path)
+    if os.path.isfile(path):
+        name = os.path.basename(path).lower()
+        if name.startswith("mayapy"):
+            return path
+        # they picked maya.exe / Maya.app's binary: mayapy sits beside it
+        for exe in ("mayapy.exe", "mayapy"):
+            cand = os.path.join(os.path.dirname(path), exe)
+            if os.path.isfile(cand):
+                return cand
+        return ""
+    # a folder: the bin folder, the Maya install root, or a macOS Maya.app
+    for sub in ("", "bin", os.path.join("Contents", "bin")):
+        for exe in ("mayapy.exe", "mayapy"):
+            cand = os.path.join(path, sub, exe)
+            if os.path.isfile(cand):
+                return cand
+    return ""
 
 
 def find_mayapy(explicit=""):
     """Return a usable mayapy path, or '' if none found."""
-    if explicit:
-        explicit = bpy_path_abs(explicit)
-        if os.path.isfile(explicit):
-            return explicit
-        # allow pointing at the Maya bin folder
-        for exe in ("mayapy.exe", "mayapy"):
-            cand = os.path.join(explicit, exe)
-            if os.path.isfile(cand):
-                return cand
-    for tmpl in _COMMON_MAYAPY:
-        for ver in _VERSIONS:
-            cand = tmpl.format(ver=ver)
-            if os.path.isfile(cand):
-                return cand
-    return ""
+    if explicit.strip():
+        found = _resolve(bpy_path_abs(explicit.strip()))
+        if found:
+            return found
+    found = installed_mayapys()
+    return found[0] if found else ""
 
 
 def bpy_path_abs(p):
@@ -59,19 +96,91 @@ def available(explicit=""):
     return bool(find_mayapy(explicit))
 
 
-_CONVERT_SCRIPT = r"""
-import sys
-import maya.standalone
-maya.standalone.initialize(name="python")
-import maya.cmds as cmds
-src, dst, dst_type = sys.argv[1], sys.argv[2], sys.argv[3]
-cmds.file(src, open=True, force=True, prompt=False, loadReferenceDepth="all")
-cmds.file(rename=dst)
-cmds.file(save=True, type=dst_type, force=True)
+def _tmp_path(suffix):
+    """A temp file path with the descriptor closed (Windows cannot overwrite a
+    file that is still open)."""
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    return path
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _summarise(out, err):
+    """Pull the real error out of Maya's startup chatter."""
+    lines = (out + "\n" + err).splitlines()
+    keep = [l for l in lines
+            if l.startswith(("MAYAIO", "Error", "Traceback", "RuntimeError",
+                             "  File", "// Error", "# Error"))
+            or "Error:" in l]
+    text = "\n".join(keep[-15:]).strip()
+    return text or "\n".join(lines[-8:]).strip() or "(no output)"
+
+
+def _run(exe, script_text, args, timeout):
+    """Run a Python script under mayapy; returns the CompletedProcess."""
+    fd, script = tempfile.mkstemp(suffix=".py", text=True)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(script_text)
+        # Blender's own Python variables would break Maya's interpreter
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP")}
+        kw = {}
+        if sys.platform.startswith("win"):
+            kw["creationflags"] = 0x08000000      # CREATE_NO_WINDOW
+        try:
+            return subprocess.run([exe, script] + list(args), env=env,
+                                  capture_output=True, text=True,
+                                  errors="replace", timeout=timeout, **kw)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Maya took longer than %d s and was stopped."
+                               % timeout)
+        except OSError as exc:
+            raise RuntimeError("Could not start mayapy (%s): %s" % (exe, exc))
+    finally:
+        _remove(script)
+
+
+_NO_MAYA = ("Autodesk Maya (mayapy) was not found. Set its path in "
+            "Preferences > Add-ons > Maya Scene IO (see the README), or use "
+            "Native for a standard .ma file.")
+
+# Every Maya script shares this wrapper: it prints one clear MAYAIO line on
+# failure and exits non-zero, so the add-on can show it instead of Maya's logs.
+_PRELUDE = r"""
+import sys, traceback
+def _fail(msg):
+    sys.stdout.write("\nMAYAIO_ERROR: %s\n" % msg)
+    sys.stdout.write(traceback.format_exc() + "\n")
+    sys.stdout.flush()
+    sys.exit(1)
 try:
-    maya.standalone.uninitialize()
+    import maya.standalone
+    maya.standalone.initialize(name="python")
+    import maya.cmds as cmds
+    import maya.mel as mel
 except Exception:
-    pass
+    _fail("could not start Maya (is this really mayapy?)")
+
+def open_scene(src):
+    try:
+        cmds.file(src, open=True, force=True, prompt=False,
+                  loadReferenceDepth="all")
+    except (TypeError, RuntimeError):
+        # older Maya, or a missing reference: retry plainly
+        cmds.file(src, open=True, force=True, prompt=False)
+
+def finish():
+    try:
+        maya.standalone.uninitialize()
+    except Exception:
+        pass
 """
 
 
@@ -81,32 +190,46 @@ def convert(src, dst, mayapy="", timeout=600):
     raises RuntimeError otherwise."""
     exe = find_mayapy(mayapy)
     if not exe:
-        raise RuntimeError(
-            "Autodesk Maya (mayapy) was not found. Set its path in the add-on "
-            "preferences to enable .mb support; .ma works without Maya.")
+        raise RuntimeError(_NO_MAYA)
     dst_type = "mayaBinary" if dst.lower().endswith(".mb") else "mayaAscii"
-    fd, script = tempfile.mkstemp(suffix=".py", text=True)
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(_CONVERT_SCRIPT)
-        proc = subprocess.run(
-            [exe, script, src, dst, dst_type],
-            capture_output=True, text=True, timeout=timeout)
-        if proc.returncode != 0 or not os.path.isfile(dst):
-            raise RuntimeError("mayapy conversion failed:\n%s\n%s"
-                               % (proc.stdout[-2000:], proc.stderr[-2000:]))
-        return dst
-    finally:
-        try:
-            os.remove(script)
-        except OSError:
-            pass
+    body = _PRELUDE + r"""
+src, dst, dst_type = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    open_scene(src)
+    cmds.file(rename=dst)
+    cmds.file(save=True, type=dst_type, force=True)
+except Exception:
+    _fail("Maya could not convert the file")
+finish()
+"""
+    proc = _run(exe, body, [src, dst, dst_type], timeout)
+    if proc.returncode != 0 or not os.path.isfile(dst) \
+            or os.path.getsize(dst) == 0:
+        raise RuntimeError("Maya conversion failed:\n%s"
+                           % _summarise(proc.stdout, proc.stderr))
+    return dst
 
 
 def mb_to_ma(src_mb, mayapy=""):
     """Convert a .mb to a temporary .ma and return its path."""
-    tmp = tempfile.mkstemp(suffix=".ma")[1]
-    return convert(src_mb, tmp, mayapy=mayapy)
+    # keep the original name so the imported objects are named after the file
+    folder = tempfile.mkdtemp(prefix="mayaio_")
+    tmp = os.path.join(folder, os.path.splitext(os.path.basename(src_mb))[0]
+                       + ".ma")
+    try:
+        return convert(src_mb, tmp, mayapy=mayapy)
+    except Exception:
+        discard_temp(tmp)
+        raise
+
+
+def discard_temp(path):
+    """Delete a file made by mb_to_ma along with its private folder."""
+    _remove(path)
+    try:
+        os.rmdir(os.path.dirname(path))
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -116,23 +239,21 @@ def mb_to_ma(src_mb, mayapy=""):
 # Maya export the scene to FBX (then importing that with Blender's native FBX
 # importer) handles any .ma/.mb file far more robustly than parsing it by hand.
 # ---------------------------------------------------------------------------
-_FBX_EXPORT_SCRIPT = r"""
-import sys
-import maya.standalone
-maya.standalone.initialize(name="python")
-import maya.cmds as cmds
-import maya.mel as mel
-
+_FBX_EXPORT_BODY = r"""
 src, dst, bake = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
-cmds.file(src, open=True, force=True, prompt=False, loadReferenceDepth="all")
-if not cmds.pluginInfo("fbxmaya", q=True, loaded=True):
-    cmds.loadPlugin("fbxmaya")
+try:
+    open_scene(src)
+    if not cmds.pluginInfo("fbxmaya", q=True, loaded=True):
+        cmds.loadPlugin("fbxmaya")
+except Exception:
+    _fail("Maya could not open the scene or load its FBX plugin")
 
 def fbx(cmd):
     try:
         mel.eval(cmd)
+        return True
     except Exception:
-        pass
+        return False          # option unknown to this Maya's FBX plugin
 
 fbx('FBXResetExport')
 fbx('FBXExportSmoothingGroups -v true')
@@ -148,7 +269,11 @@ fbx('FBXExportInputConnections -v false')
 fbx('FBXExportConstraints -v false')
 fbx('FBXExportInAscii -v false')
 fbx('FBXExportUpAxis y')
-fbx('FBXExportFileVersion -v FBX202000')
+# newest FBX version this Maya understands (2014-era plugins stop at 2013)
+for ver in ("FBX202000", "FBX201900", "FBX201800", "FBX201600",
+            "FBX201400", "FBX201300", "FBX201200"):
+    if fbx('FBXExportFileVersion -v %s' % ver):
+        break
 fbx('FBXExportBakeComplexAnimation -v %s' % ('true' if bake else 'false'))
 if bake:
     start = cmds.playbackOptions(q=True, min=True)
@@ -156,12 +281,15 @@ if bake:
     fbx('FBXExportBakeComplexStart -v %d' % int(start))
     fbx('FBXExportBakeComplexEnd -v %d' % int(end))
 
-cmds.file(dst, force=True, type="FBX export", exportAll=True,
-          preserveReferences=False, prompt=False)
 try:
-    maya.standalone.uninitialize()
+    mel.eval('FBXExport -f "%s"' % dst.replace("\\", "/"))
 except Exception:
-    pass
+    try:
+        cmds.file(dst, force=True, type="FBX export", exportAll=True,
+                  preserveReferences=False, prompt=False)
+    except Exception:
+        _fail("Maya %s could not export FBX" % cmds.about(version=True))
+finish()
 """
 
 
@@ -169,25 +297,15 @@ def to_fbx(src, mayapy="", bake_animation=True, timeout=1800):
     """Convert any .ma/.mb to a temporary FBX via Maya. Returns the FBX path."""
     exe = find_mayapy(mayapy)
     if not exe:
-        raise RuntimeError(
-            "Autodesk Maya (mayapy) was not found. The reliable 'any file' "
-            "path needs a local Maya. Set its path in the add-on preferences. "
-            "Native .ma import works without Maya for standard files.")
-    dst = tempfile.mkstemp(suffix=".fbx")[1]
-    fd, script = tempfile.mkstemp(suffix=".py", text=True)
+        raise RuntimeError(_NO_MAYA)
+    dst = _tmp_path(".fbx")
     try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(_FBX_EXPORT_SCRIPT)
-        proc = subprocess.run(
-            [exe, script, src, dst, "1" if bake_animation else "0"],
-            capture_output=True, text=True, timeout=timeout)
-        if proc.returncode != 0 or not os.path.isfile(dst) \
-                or os.path.getsize(dst) == 0:
-            raise RuntimeError("Maya FBX export failed:\n%s\n%s"
-                               % (proc.stdout[-2000:], proc.stderr[-2000:]))
+        proc = _run(exe, _PRELUDE + _FBX_EXPORT_BODY,
+                    [src, dst, "1" if bake_animation else "0"], timeout)
+        if proc.returncode != 0 or os.path.getsize(dst) == 0:
+            raise RuntimeError("Maya FBX export failed:\n%s"
+                               % _summarise(proc.stdout, proc.stderr))
         return dst
-    finally:
-        try:
-            os.remove(script)
-        except OSError:
-            pass
+    except Exception:
+        _remove(dst)
+        raise
