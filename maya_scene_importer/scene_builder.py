@@ -69,12 +69,15 @@ def _triple(values, default):
     return out + list(default[len(out):])
 
 
-def _node_local(node, ov=None):
+def _node_local(node, scene, ov=None):
     """Local matrix of any DAG transform / joint node from its raw attrs.
-    ``ov`` overrides single channels ({'tx': 3.0, 'rz': 90.0, ...}), which is
-    how animation is evaluated."""
-    t = _triple(ma_parser.as_floats(node.attr_tokens('t')), (0, 0, 0))
-    r = _triple(ma_parser.as_floats(node.attr_tokens('r')), (0, 0, 0))
+    ``ov`` overrides single channels ({'tx': 3.0, 'rz': 90.0, ...}) in cm and
+    degrees, which is how animation is evaluated."""
+    lin, ang = scene.cm_per_unit, scene.deg_per_unit
+    t = [v * lin for v in
+         _triple(ma_parser.as_floats(node.attr_tokens('t')), (0, 0, 0))]
+    r = [v * ang for v in
+         _triple(ma_parser.as_floats(node.attr_tokens('r')), (0, 0, 0))]
     s = _triple(ma_parser.as_floats(node.attr_tokens('s')), (1, 1, 1))
     if ov:
         for chan, vec in (('t', t), ('r', r), ('s', s)):
@@ -93,7 +96,8 @@ def _node_local(node, ov=None):
     S = Matrix.Diagonal(Vector((s[0], s[1], s[2])).to_4d())
     if node.ntype == 'joint':
         jo = _triple(ma_parser.as_floats(node.attr_tokens('jo')), (0, 0, 0))
-        JO = Euler([math.radians(a) for a in jo], 'XYZ').to_matrix().to_4x4()
+        JO = Euler([math.radians(a * ang) for a in jo],
+                   'XYZ').to_matrix().to_4x4()
         return T @ JO @ R @ S
     return T @ R @ S
 
@@ -134,7 +138,7 @@ def _world_matrices(scene):
         node = scene.nodes[name]
         if node.ntype not in ('joint', 'transform'):
             continue
-        local = _node_local(node)
+        local = _node_local(node, scene)
         pw = world.get(node.parent)
         world[name] = (pw @ local) if pw is not None else local
     return world
@@ -1016,7 +1020,8 @@ def _apply_animation(data, node_world, gm, arm_obj, objects, mesh_world, log):
         parent_world = node_world.get(node.parent, Matrix.Identity(4))
 
         def local_at(f):
-            return _node_local(node, {a: _sample(k, f) for a, k in chans.items()})
+            return _node_local(node, scene,
+                               {a: _sample(k, f) for a, k in chans.items()})
 
         bone = bones.get(bl_name(name)) if arm_obj else None
         prev = None

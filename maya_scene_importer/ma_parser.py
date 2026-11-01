@@ -30,6 +30,17 @@ _SETATTR_RE = re.compile(
 _TYPE_RE = re.compile(r'\s*-type\s+"([^"]*)"')
 _LAZY_MIN = 512      # shorter value text is decoded straight away
 
+# currentUnit -l / -a names -> centimetres / degrees per unit.  A .ma writes
+# length and angle attributes (.t, .r, .jo, clip planes, cone angles, animCurve
+# values) in these UI units; data blocks (mesh points, matrices, curve CVs)
+# stay in Maya's internal centimetres.
+_CM_PER = {'mm': 0.1, 'millimeter': 0.1, 'cm': 1.0, 'centimeter': 1.0,
+           'm': 100.0, 'meter': 100.0, 'km': 100000.0, 'kilometer': 100000.0,
+           'in': 2.54, 'inch': 2.54, 'ft': 30.48, 'foot': 30.48,
+           'yd': 91.44, 'yard': 91.44, 'mi': 160934.4, 'mile': 160934.4}
+_DEG_PER = {'deg': 1.0, 'degree': 1.0, 'rad': 57.29577951308232,
+            'radian': 57.29577951308232, 'min': 1.0 / 60, 'sec': 1.0 / 3600}
+
 
 def _unescape(s):
     return _UNESCAPE_RE.sub(r'\1', s) if '\\' in s else s
@@ -112,6 +123,8 @@ class MayaScene:
         self.connections = []      # (src_node, src_attr, dst_node, dst_attr)
         self.by_type = {}          # ntype -> [names]
         self.time_unit = 'film'    # currentUnit -t (Maya's default)
+        self.linear_unit = 'cm'    # currentUnit -l
+        self.angle_unit = 'deg'    # currentUnit -a
         self.play_range = None     # (min, max) from playbackOptions
         self.references = []       # files this scene references (not loaded)
         self.skipped = 0           # statements too damaged to read
@@ -121,6 +134,16 @@ class MayaScene:
         self._conn_by_dst = None
         self._conn_by_src = None
         self._dst_by_node = None    # node -> [(attr, sources)]
+
+    @property
+    def cm_per_unit(self):
+        """Centimetres per scene length unit (1.0 for a .mb or a cm scene)."""
+        return _CM_PER.get(self.linear_unit, 1.0)
+
+    @property
+    def deg_per_unit(self):
+        """Degrees per scene angle unit (1.0 for a .mb or a degree scene)."""
+        return _DEG_PER.get(self.angle_unit, 1.0)
 
     # -- building ---------------------------------------------------------
     def add_node(self, node):
@@ -479,6 +502,10 @@ class MAParser:
         for i, (kind, val) in enumerate(args[:-1]):
             if kind == 'word' and val in ('-t', '-time'):
                 self.scene.time_unit = args[i + 1][1]
+            elif kind == 'word' and val in ('-l', '-linear'):
+                self.scene.linear_unit = args[i + 1][1]
+            elif kind == 'word' and val in ('-a', '-angle'):
+                self.scene.angle_unit = args[i + 1][1]
 
     def _c_playbackOptions(self, args):
         lo = hi = None

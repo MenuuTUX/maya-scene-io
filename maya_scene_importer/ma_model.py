@@ -507,7 +507,10 @@ class MAImport:
                 jd.radius = float(radi[0])
             except ValueError:
                 pass
-        jd.t = _pad3(jd.t); jd.r = _pad3(jd.r); jd.jo = _pad3(jd.jo)
+        lin, ang = self.scene.cm_per_unit, self.scene.deg_per_unit
+        jd.t = tuple(v * lin for v in _pad3(jd.t))
+        jd.r = tuple(v * ang for v in _pad3(jd.r))
+        jd.jo = tuple(v * ang for v in _pad3(jd.jo))
         # custom attributes (preserve the rig's per-joint metadata)
         for spec in node.add_attrs:
             key = spec.get('ln') or spec.get('sn')
@@ -865,12 +868,14 @@ class MAImport:
                 values = as_floats(cam.attr_tokens(attr))
                 return values[0] if values else default
             aperture = as_floats(cam.attr_tokens('cap'))     # inches
+            lin = self.scene.cm_per_unit                     # fl stays in mm
             out.append(dict(name=tr, shape=cam.name,
                             focal=num('fl', 35.0),
                             ortho=as_bool(cam.attr_tokens('o')),
-                            ortho_width=num('ow', 30.0),
+                            ortho_width=num('ow', 30.0 / lin) * lin,
                             sensor_width=aperture[0] * 25.4 if aperture else None,
-                            near=num('ncp', 0.1), far=num('fcp', 10000.0)))
+                            near=num('ncp', 0.1 / lin) * lin,
+                            far=num('fcp', 10000.0 / lin) * lin))
         return out
 
     # -- lights ---------------------------------------------------------
@@ -891,7 +896,8 @@ class MAImport:
                                 btype=btype,
                                 color=tuple(col[:3]) if len(col) >= 3 else (1, 1, 1),
                                 energy=inten[0] if inten else 1.0,
-                                spot_angle=cone[0] if cone else 40.0))
+                                spot_angle=cone[0] * self.scene.deg_per_unit
+                                if cone else 40.0))
         return out
 
     # -- animation (time-based animCurves) ------------------------------
@@ -906,7 +912,7 @@ class MAImport:
     def animations(self):
         """{node name: {attr: [(frame, value), ...]}} for time-based animCurves
         driving translate / rotate / scale directly.  Values stay in Maya's
-        units (scene length unit, degrees); the builder converts them."""
+        units (centimetres, degrees); the builder converts them."""
         out = {}
         for ctype in ('animCurveTL', 'animCurveTA', 'animCurveTU', 'animCurveTT'):
             for cv in self.scene.of_type(ctype):
@@ -921,7 +927,10 @@ class MAImport:
 
     def _anim_keys(self, cv, ctype):
         fl = as_floats(cv.attr_tokens('ktv'))
-        keys = [(fl[i], fl[i + 1]) for i in range(0, len(fl) - 1, 2)]
+        # TL / TA values are in the scene's UI units; TU / TT are unitless
+        k = {'animCurveTL': self.scene.cm_per_unit,
+             'animCurveTA': self.scene.deg_per_unit}.get(ctype, 1.0)
+        keys = [(fl[i], fl[i + 1] * k) for i in range(0, len(fl) - 1, 2)]
         keys.sort(key=lambda k: k[0])
         return keys
 

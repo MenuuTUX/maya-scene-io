@@ -7,6 +7,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 
 ### Fixed
 
+- A `.ma` saved with a working unit other than centimetres or degrees
+  (`currentUnit -l meter`, `inch`, `-a radian`, ...) came in at the wrong size
+  and rotation: translations, joint orients, camera clip planes, spot cone
+  angles and animation keys were read as cm and degrees. They are now converted
+  from the scene's units. Mesh points, matrices and curve CVs were already
+  right, since Maya writes those in centimetres whatever the working unit.
 - Vertex tweaks written as a range (`.pt[0:7]`, the usual form) were ignored,
   so tweaked meshes landed in the wrong place. Only single-vertex tweaks were
   applied.
