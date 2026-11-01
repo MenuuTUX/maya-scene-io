@@ -966,7 +966,9 @@ def _build_light(lt, gm, node_world, collection):
 
 
 def _sample(keys, frame):
-    """Linear sample of [(frame, value)] keys, held beyond both ends."""
+    """Value of a Maya curve of (frame, value, in_slope, out_slope) keys at
+    ``frame``: a Hermite segment between keys, using the slopes the model
+    worked out from Maya's tangent types, and held beyond both ends."""
     if frame <= keys[0][0]:
         return keys[0][1]
     if frame >= keys[-1][0]:
@@ -978,8 +980,15 @@ def _sample(keys, frame):
             lo = mid
         else:
             hi = mid
-    (f0, v0), (f1, v1) = keys[lo], keys[hi]
-    return v0 + (v1 - v0) * (frame - f0) / (f1 - f0)
+    f0, v0, _, out0 = keys[lo]
+    f1, v1, in1, _ = keys[hi]
+    if out0 == 'step':
+        return v0
+    dt = f1 - f0
+    t = (frame - f0) / dt
+    t2, t3 = t * t, t * t * t
+    return ((2 * t3 - 3 * t2 + 1) * v0 + (t3 - 2 * t2 + t) * dt * out0
+            + (-2 * t3 + 3 * t2) * v1 + (t3 - t2) * dt * in1)
 
 
 def _scaled_translation(m, s):
@@ -1020,13 +1029,15 @@ def _key_pose(target, matrix, frame, prev):
 def _apply_animation(data, node_world, gm, arm_obj, objects, mesh_world, log):
     """Key time-based animCurves onto pose bones and objects.
 
-    Channels are not independent once Maya's joint orient, rotate order and the
-    Y-up to Z-up swap are folded in, so every animated node is evaluated at the
-    union of its key frames as a full Maya local matrix and converted to a
-    Blender basis matrix.  Curves are sampled linearly between keys; Blender's
-    own interpolation then smooths the result.  A node that cannot be keyed
-    (a zero scale makes its matrix singular) is skipped with a warning and
-    does not stop the others.  Returns the keyed frame span."""
+    Channels are not independent once Maya's joint orient, rotate order,
+    pivots and the Y-up to Z-up swap are folded in, so every animated node is
+    evaluated as a full Maya matrix on every frame of its key range and
+    converted to a Blender basis matrix.  Keying only Maya's key frames would
+    let Blender blend location and rotation separately, which swings a door
+    off its hinge between keys.  A mesh under an animated group is keyed with
+    the group's motion too.  A node that cannot be keyed (a zero scale makes
+    its matrix singular) is skipped with a warning and does not stop the
+    others.  Returns the keyed frame span."""
     anim = data.animations()
     if not anim:
         return None
@@ -1068,15 +1079,62 @@ def _apply_animation(data, node_world, gm, arm_obj, objects, mesh_world, log):
         rest_inv = _convert(gm, rest).inverted() if rest is not None else None
         obj.rotation_mode = 'QUATERNION'
         for f in times:
-            m = _convert(gm, parent_world @ local_at(f))
+            m = _convert(gm, world_at(name, f))
             prev = _key_pose(obj, m if rest_inv is None else m @ rest_inv, f,
                              prev)
 
-    for name, chans in anim.items():
+    def world_at(name, f):
+        """Maya world matrix of ``name`` at frame ``f``, with every animated
+        node on its parent chain evaluated at that frame."""
+        node = scene.nodes.get(name)
+        if node is None or node.ntype not in ('joint', 'transform'):
+            return Matrix.Identity(4)
+        if not animated_chain(name):
+            return node_world.get(name, Matrix.Identity(4))
+        chans = anim.get(name)
+        local = _node_local(node, scene, {a: _sample(k, f)
+                                          for a, k in chans.items()}) \
+            if chans else _node_local(node, scene)
+        return (world_at(node.parent, f) if node.parent else
+                Matrix.Identity(4)) @ local
+
+    chain_cache = {}
+
+    def animated_chain(name):
+        """True when ``name`` or one of its ancestors is animated."""
+        if name not in chain_cache:
+            node = scene.nodes.get(name)
+            chain_cache[name] = name in anim or bool(
+                node is not None and node.parent
+                and animated_chain(node.parent))
+        return chain_cache[name]
+
+    def frames_of(name):
+        """Every whole frame of the key ranges on ``name``'s chain, plus the
+        key frames themselves."""
+        keyed = set()
+        cur = scene.nodes.get(name)
+        while cur is not None:
+            for keys in anim.get(cur.name, {}).values():
+                keyed.update(k[0] for k in keys)
+            cur = scene.nodes.get(cur.parent) if cur.parent else None
+        if not keyed:
+            return []
+        lo, hi = min(keyed), max(keyed)
+        return sorted(keyed | set(range(math.ceil(lo), math.floor(hi) + 1)))
+
+    # animated nodes, plus meshes that only move because a group above them is
+    targets = dict(anim)
+    for name in objects:
+        if name not in targets and animated_chain(name):
+            targets[name] = {}
+    for name, chans in targets.items():
         node = scene.nodes.get(name)
         if node is None:
             continue
-        times = sorted({f for keys in chans.values() for f, _ in keys})
+        times = frames_of(name)
+        if not times:
+            continue
         try:
             key_node(name, chans, node, times)
         except ValueError as exc:
