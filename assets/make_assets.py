@@ -98,7 +98,7 @@ def chip(d, xy, text, f, fill, fg):
     return x + w + pad * 2
 
 
-def poster(path, W, H):
+def poster(path, W, H, native_only=False):
     u = H / 1080.0
     img = gradient(W * SS, H * SS)
     d = ImageDraw.Draw(img)
@@ -119,7 +119,7 @@ def poster(path, W, H):
            font=font(int(S(52)), False), fill=MUTED, anchor="ls")
     f = font(int(S(34)))
     x = left
-    for t in (".ma", ".mb"):
+    for t in ((".ma",) if native_only else (".ma", ".mb")):
         x = chip(d, (x, S(440)), t, f, (20, 60, 62), TEAL) + S(16)
     d.text((x + S(4), S(440) + S(34) * 0.95), "\u2192", font=f, fill=MUTED, anchor="lm")
     chip(d, (x + S(56), S(440)), ".blend", f, (70, 45, 8), AMBER_L)
@@ -142,4 +142,10 @@ if __name__ == "__main__":
     icon(os.path.join(HERE, "icon.png"))
     poster(os.path.join(HERE, "featured.png"), 1920, 1080)
     poster(os.path.join(HERE, "banner.png"), 1280, 640)
+    marketplace = os.path.abspath(os.path.join(HERE, "..", "marketplace", "assets"))
+    os.makedirs(marketplace, exist_ok=True)
+    poster(os.path.join(marketplace, "featured_native.png"), 1920, 1080,
+           native_only=True)
+    poster(os.path.join(marketplace, "banner_native.png"), 1280, 640,
+           native_only=True)
     print("done")

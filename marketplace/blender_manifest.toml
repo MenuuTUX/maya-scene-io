@@ -1,0 +1,20 @@
+schema_version = "1.0.0"
+
+id = "maya_ascii_scene_io"
+version = "1.0.0"
+name = "Maya ASCII Scene IO"
+tagline = "Import Maya .ma and .mb scenes, export .ma, with rig support"
+maintainer = "Shibashish Das <shibashish.das07@gmail.com>"
+type = "add-on"
+
+tags = ["Import-Export", "Rigging", "Pipeline"]
+
+blender_version_min = "4.2.0"
+website = "https://github.com/MenuuTUX/maya-scene-io"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+[permissions]
+files = "Import Maya scene files and export Maya ASCII files"
