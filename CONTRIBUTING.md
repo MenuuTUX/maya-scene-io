@@ -8,8 +8,9 @@ long tail of edge cases and real files are how they get found.
 
 The add-on is split so the hard part can be tested without Blender:
 
-- `ma_parser.py` and `ma_model.py` do not import `bpy`. The parser turns a Maya
-  ASCII file into a node and connection graph; the model turns that graph into
+- `ma_parser.py`, `mb_parser.py` and `ma_model.py` do not import `bpy`. The
+  parsers turn a Maya ASCII or Maya Binary file into a node and connection
+  graph; the model turns that graph into
   plain Python data (meshes, skeleton, skin, blend shapes, materials, and so on).
 - `scene_builder.py`, `ma_exporter.py`, `rig_builder.py`, `maya_bridge.py` and
   `__init__.py` are the Blender side and need `bpy`.
@@ -26,18 +27,30 @@ cd maya_scene_importer
 python -c "import ma_parser, ma_model; print('imports ok')"
 ```
 
-CI runs the same two checks plus a small parse-and-reconstruct smoke test on
-every push and pull request.
+These checks cover Python syntax and the parser/model imports. The repository
+does not currently run a CI test suite.
 
 ## Building the add-on
+
+Build the full GitHub release package with:
 
 ```
 blender --command extension build --source-dir maya_scene_importer --output-dir dist
 ```
 
-Releases are built automatically: push a tag like `v1.1.0` and the release
-workflow packages the zip and attaches it to a GitHub Release. Bump the version
-in `maya_scene_importer/blender_manifest.toml` first.
+To build the native-only edition prepared for the official Blender Extensions
+directory, run the command below. Both editions share `maya_scene_importer/ui.py`
+(operators, sidebar, registration). The full edition adds `bridge_ui.py`, whose
+operators subclass the shared ones; the extension leaves it, `maya_bridge.py`
+and the `mayapy` setting out, with `marketplace/__init__.py` as its entry point:
+
+```
+python scripts/build_native_extension.py --output-dir dist
+```
+
+To prepare a release, bump the version in
+`maya_scene_importer/blender_manifest.toml`, build the ZIP with the command
+above, then attach it to a GitHub Release tagged `v1.1.0` (or the next version).
 
 ## Style
 

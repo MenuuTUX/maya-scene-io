@@ -4,13 +4,16 @@ Import and export Maya scenes (`.ma` / `.mb`) in Blender.
 
 ## Two engines
 
-- **Native** reads `.ma` directly, no Maya needed. Handles meshes, UVs, the
-  skeleton, skin weights, blend shapes, and lambert/blinn/phong materials.
+- **Native** reads `.ma` and `.mb` directly, no Maya needed, from old and new
+  Maya versions. Handles meshes, UVs, the skeleton, skin weights, blend shapes
+  (`.ma` only for now), and lambert/blinn/phong materials.
 - **Maya bridge** drives a local `mayapy` to convert any `.ma` or `.mb` to FBX,
-  then imports that. Needed for `.mb` and for files with plugin nodes. Set the
-  Maya path in `Edit > Preferences > Add-ons > Maya Scene IO`.
+  then imports that. Use it for files with plugin nodes or meshes that exist
+  only as construction history. Set the Maya path in
+  `Edit > Preferences > Add-ons > Maya Scene IO`.
 
-`Auto` uses Native for `.ma` and the bridge for `.mb`.
+`Auto` uses Native, except that a `.mb` goes through the bridge when Maya is
+installed. `.mb` export needs Maya.
 
 ## Usage
 

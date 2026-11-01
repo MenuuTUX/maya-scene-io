@@ -10,9 +10,14 @@ type = "add-on"
 tags = ["Import-Export", "Rigging", "Pipeline"]
 
 blender_version_min = "4.2.0"
+website = "https://github.com/MenuuTUX/maya-scene-io"
 
 license = [
   "SPDX:GPL-3.0-or-later",
 ]
 
-# Pure-Python; .ma works on every platform with no Maya. .mb uses a local Maya.
+[permissions]
+files = "Import and export Maya scene files"
+
+# Pure-Python; .ma and .mb import work on every platform with no Maya.
+# .mb export and the optional Maya Bridge use a local Maya.

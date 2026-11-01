@@ -15,15 +15,23 @@ from collections import deque
 
 try:                                    # package (inside Blender)
     from . import ma_parser
-    from .ma_parser import as_floats, as_bool
+    from .ma_parser import as_floats, as_bool, value_tokens, LazyValues
 except ImportError:                      # standalone (unit testing)
     import ma_parser
-    from ma_parser import as_floats, as_bool
+    from ma_parser import as_floats, as_bool, value_tokens, LazyValues
 
 
 # ---------------------------------------------------------------------------
 # data containers
 # ---------------------------------------------------------------------------
+_OFF = ('no', '0', 'off', 'false')
+
+
+def _is_intermediate(node):
+    io = node.attr_tokens('io')
+    return bool(io and io[0] in ('yes', '1', 'on', 'true'))
+
+
 class MeshData:
     def __init__(self, name):
         self.name = name              # the transform (object) name
@@ -32,12 +40,12 @@ class MeshData:
         self.verts = []               # [(x, y, z), ...]
         self.edges = []               # [(a, b, sharp_bool), ...]
         self.faces = []               # [[vidx, ...], ...]
-        self.face_uvs = []            # [[uvidx, ...] | None, ...]  (per face)
         self.uv_sets = []             # [(name, [(u, v), ...]), ...]
         self.face_uv_sets = []        # per uv-set: [[uvidx,...]|None per face]
-        self.normals = None           # optional [(x, y, z), ...] per face-corner
-        self.world_matrix = None      # 16 floats (Maya row-major) or None
+        self.color_sets = []          # [(name, [(r, g, b, a), ...], per-face ids)]
+        self.active_color = 0         # index into color_sets
         self.is_skinned = False
+        self.skin_geom = None         # skinCluster geomMatrix (16 floats) or None
         self.hidden = False           # hidden in Maya (.v off on self or a parent)
 
 
@@ -70,6 +78,7 @@ class ShapeData:
     def __init__(self, name):
         self.name = name
         self.deltas = {}              # vertex index -> (dx, dy, dz)
+        self.weight = 0.0             # authored blendShape weight
 
 
 class MaterialData:
@@ -82,6 +91,8 @@ class MaterialData:
         self.base_texture = None      # resolved/expected base colour map name
         self.tex_prefix = None        # e.g. "Body" -> Body_BaseColor.png ...
         self.maya_textures = {}       # slot -> original path string
+        self.normal_mode = 1          # bump2d: 0 bump, 1 tangent, 2 object space
+        self.bump_depth = 1.0
 
 
 class CurveData:
@@ -95,22 +106,13 @@ class CurveData:
         self.color = None             # wire colour (r, g, b) if known
 
 
-class ConstraintData:
-    def __init__(self, name, ctype):
-        self.name = name
-        self.ctype = ctype            # point/orient/parent/scale/aim
-        self.constrained = None       # driven node name
-        self.constrained_is_joint = False
-        self.targets = []             # [(node, weight), ...]
-
-
 class IKData:
     def __init__(self, name):
         self.name = name
         self.start_joint = None       # chain root
-        self.end_joint = None         # chain tip (effector's joint)
+        self.end_joint = None         # joint the effector sits on (wrist)
+        self.eff_parent = None        # joint the effector hangs under (elbow)
         self.solver = None            # ikSCsolver / ikRPsolver / ikSplineSolver
-        self.pole = None              # pole-vector target node, if any
 
 
 # ---------------------------------------------------------------------------
@@ -118,42 +120,70 @@ class IKData:
 # ---------------------------------------------------------------------------
 def _reconstruct_geometry(mesh):
     """Rebuild verts / edges / faces / per-face uv indices from a mesh node."""
+    problems = []
     vt = as_floats(mesh.attr_tokens('vt'))
-    verts = [(vt[i], vt[i + 1], vt[i + 2]) for i in range(0, len(vt), 3)]
+    if not all(map(math.isfinite, vt)):      # nan / inf would poison the mesh
+        vt = [x if math.isfinite(x) else 0.0 for x in vt]
+        problems.append("non-finite vertex positions were set to 0")
+    verts = [(vt[i], vt[i + 1], vt[i + 2]) for i in range(0, len(vt) - 2, 3)]
 
     et = mesh.attr_tokens('ed')
     edges = []
-    for i in range(0, len(et), 3):
-        a = int(float(et[i]))
-        b = int(float(et[i + 1]))
-        sharp = (et[i + 2] == '0')           # flag 0 == hard/sharp edge
-        edges.append((a, b, sharp))
+    try:
+        for i in range(0, len(et) - 2, 3):
+            a = int(float(et[i]))
+            b = int(float(et[i + 1]))
+            sharp = (et[i + 2] == '0')           # flag 0 == hard/sharp edge
+            edges.append((a, b, sharp))
+    except (ValueError, OverflowError):
+        problems.append("edge data is damaged; %d edges kept" % len(edges))
 
-    # apply vertex tweaks (.pt[i] = float3 offset added to the base position)
+    # apply vertex tweaks (.pt[i] or .pt[a:b] = float3 offsets added to the
+    # base positions)
     for name, atype, toks in mesh.set_attrs:
         if name.startswith('pt['):
-            m = re.match(r'pt\[(\d+)\]', name)
+            m = re.match(r'pt\[(\d+)(?::(\d+))?\]$', name)
             if not m:
                 continue
-            vi = int(m.group(1))
-            off = as_floats(toks)
-            if vi < len(verts) and len(off) >= 3:
+            first = int(m.group(1))
+            last = int(m.group(2)) if m.group(2) else first
+            off = as_floats(value_tokens(toks))
+            for k, vi in enumerate(range(first, last + 1)):
+                if vi >= len(verts) or len(off) < 3 * k + 3:
+                    break
                 x, y, z = verts[vi]
-                verts[vi] = (x + off[0], y + off[1], z + off[2])
+                verts[vi] = (x + off[3 * k], y + off[3 * k + 1],
+                             z + off[3 * k + 2])
 
     # polyFaces -> face vertex loops + per uv-set face indices
     fc = mesh.attr_tokens('fc')
     faces = []
     n_uvsets = max(1, len(mesh.attr('uvst')))
     faces_uv = []     # list per face of dict(uvset -> [uvidx,...])
+    faces_col = []    # list per face of dict(colour set -> [colour id,...])
+    try:
+        unknown = _read_faces(fc, edges, faces, faces_uv, faces_col)
+        if unknown:
+            problems.append("unknown face record '%s'; %d faces kept"
+                            % (unknown, len(faces)))
+    except (IndexError, ValueError, TypeError, OverflowError):
+        problems.append("face data is damaged; %d faces kept" % len(faces))
+
+    return verts, edges, faces, faces_uv, n_uvsets, faces_col, problems
+
+
+def _read_faces(fc, edges, faces, faces_uv, faces_col):
+    """Decode a polyFaces token list into ``faces`` / ``faces_uv`` /
+    ``faces_col`` in place, so that everything read before a damaged record is
+    still there to keep.  Returns the first record type it did not know."""
     i, n = 0, len(fc)
-    cur = None
-    cur_uv = None
+    cur = cur_uv = cur_col = None
     while i < n:
         rec = fc[i]; i += 1
         if rec == 'f':
             if cur is not None:
                 faces.append(cur); faces_uv.append(cur_uv)
+                faces_col.append(cur_col)
             c = int(fc[i]); i += 1
             loop = []
             for _ in range(c):
@@ -164,6 +194,7 @@ def _reconstruct_geometry(mesh):
                     loop.append(edges[-e - 1][1])
             cur = loop
             cur_uv = {}
+            cur_col = {}
         elif rec == 'mu':
             uvset = int(fc[i]); i += 1
             c = int(fc[i]); i += 1
@@ -174,33 +205,54 @@ def _reconstruct_geometry(mesh):
             cur_uv[0] = [int(fc[i + k]) for k in range(c)]
             i += c
         elif rec == 'mc':
-            i += 1                         # colour set index
+            cset = int(fc[i]); i += 1             # colour set index
             c = int(fc[i]); i += 1
+            cur_col[cset] = [int(fc[i + k]) for k in range(c)]
             i += c
         elif rec == 'h':
             c = int(fc[i]); i += 1
             i += c                         # hole edges (ignored)
         else:
+            unknown = rec
             break
+    else:
+        unknown = None
     if cur is not None:
-        faces.append(cur); faces_uv.append(cur_uv)
+        faces.append(cur); faces_uv.append(cur_uv); faces_col.append(cur_col)
+    return unknown
 
-    return verts, edges, faces, faces_uv, n_uvsets
+
+def _color_sets(mesh):
+    """[(name, [(r, g, b, a), ...])] for every colour set, in set order."""
+    sets = {}
+    for ename, atype, toks in mesh.set_attrs:
+        m = re.match(r'clst\[(\d+)\]\.(clsn|clsp)', ename)
+        if not m:
+            continue
+        entry = sets.setdefault(int(m.group(1)), ["colorSet%s" % m.group(1), []])
+        values = value_tokens(toks)
+        if m.group(2) == 'clsn':
+            if values:
+                entry[0] = values[0]
+        else:
+            fl = as_floats(values)
+            entry[1].extend(tuple(fl[j:j + 4]) for j in range(0, len(fl) - 3, 4))
+    return [(name, colors) for _, (name, colors) in sorted(sets.items())]
 
 
 def _uv_coords(mesh, uvset_index):
     """Return (set_name, [(u, v), ...]) for a uv set."""
-    entries = mesh.attr('uvst')
     name = "map%d" % (uvset_index + 1)
     coords = []
     pref = "uvst[%d]" % uvset_index
     for ename, atype, toks in mesh.set_attrs:
         if ename.startswith(pref + ".uvsn"):
+            toks = value_tokens(toks)
             if toks:
                 name = toks[0]
         elif ename.startswith(pref + ".uvsp"):
-            fl = as_floats(toks)
-            for j in range(0, len(fl), 2):
+            fl = as_floats(value_tokens(toks))
+            for j in range(0, len(fl) - 1, 2):
                 coords.append((fl[j], fl[j + 1]))
     return name, coords
 
@@ -221,8 +273,10 @@ _PASSTHROUGH = {
 class MAImport:
     def __init__(self, scene):
         self.scene = scene
-        self._mesh_by_shape = None
         self._geom_flow = None
+        self._skin_of_shape = None
+        self._hidden_by_layer = None
+        self.warnings = []             # damaged items skipped along the way
 
     # -- relationship helpers --------------------------------------------
     def _shape_to_transform(self, shape_name):
@@ -262,98 +316,156 @@ class MAImport:
     def meshes(self):
         """One MeshData per transform that owns renderable geometry."""
         out = []
+        history_only = []
         by_transform = {}
         for m in self.scene.of_type('mesh'):
             tr = m.parent
             by_transform.setdefault(tr, []).append(m)
 
         for tr, shapes in by_transform.items():
-            # geometry shape = the one carrying .vt + .fc
-            geo = None
-            render = None
-            for sh in shapes:
-                io = sh.attr_tokens('io')
-                is_io = bool(io and io[0] in ('yes', '1', 'on', 'true'))
-                if not is_io:
-                    render = sh.name
-                if sh.has_attr('vt') and sh.has_attr('fc'):
-                    if geo is None or not is_io:
-                        # prefer a non-intermediate geo shape if one exists,
-                        # else fall back to the Orig
-                        if geo is None:
-                            geo = sh.name
-                        else:
-                            geo_node = self.scene.nodes[geo]
-                            gio = geo_node.attr_tokens('io')
-                            if gio and gio[0] in ('yes', '1', 'on', 'true'):
-                                geo = sh.name
-            if geo is None:
+            try:
+                md = self._mesh_data(tr, shapes)
+            except Exception as exc:          # one bad mesh must not stop the rest
+                self.warnings.append("mesh '%s' skipped: %s" % (tr, exc))
                 continue
-            if render is None:
-                render = geo
-
-            md = MeshData(tr or geo)
-            md.shape = geo
-            md.render_shape = render
-            gnode = self.scene.nodes[geo]
-            (md.verts, md.edges, md.faces,
-             faces_uv, n_uvsets) = _reconstruct_geometry(gnode)
-
-            for s in range(n_uvsets):
-                set_name, coords = _uv_coords(gnode, s)
-                if not coords:
-                    continue
-                per_face = [fu.get(s) if fu else None for fu in faces_uv]
-                md.uv_sets.append((set_name, coords))
-                md.face_uv_sets.append(per_face)
-
-            # is this geometry driven by a skinCluster?
-            md.is_skinned = self._mesh_is_skinned(render)
-            # respect Maya visibility: hidden if .v is off on the transform or
-            # any ancestor (catches the FaceFitSkeleton rig-fit helpers and the
-            # closed-mouth teeth/tongue Maya keeps hidden)
-            md.hidden = self._hidden_by_visibility(tr) or \
-                self._hidden_by_visibility(geo)
-            out.append(md)
+            if md is not None:
+                out.append(md)
+            elif not all(_is_intermediate(sh) for sh in shapes):
+                history_only.append(tr)
+        if history_only:
+            self.warnings.append(
+                "%d mesh(es) skipped because the file stores only the "
+                "construction history that builds them, no geometry (%s%s). "
+                "Delete history in Maya, or use the Maya Bridge"
+                % (len(history_only), ", ".join(history_only[:5]),
+                   ", ..." if len(history_only) > 5 else ""))
         return out
+
+    def _mesh_data(self, tr, shapes):
+        # geometry shape = the one carrying .vt + .fc
+        geo = None
+        render = None
+        for sh in shapes:
+            io = sh.attr_tokens('io')
+            is_io = bool(io and io[0] in ('yes', '1', 'on', 'true'))
+            if not is_io:
+                render = sh.name
+            if sh.has_attr('vt') and sh.has_attr('fc'):
+                if geo is None or not is_io:
+                    # prefer a non-intermediate geo shape if one exists,
+                    # else fall back to the Orig
+                    if geo is None:
+                        geo = sh.name
+                    else:
+                        geo_node = self.scene.nodes[geo]
+                        gio = geo_node.attr_tokens('io')
+                        if gio and gio[0] in ('yes', '1', 'on', 'true'):
+                            geo = sh.name
+        if geo is None:
+            return None
+        if render is None:
+            render = geo
+
+        md = MeshData(tr or geo)
+        md.shape = geo
+        md.render_shape = render
+        gnode = self.scene.nodes[geo]
+        (md.verts, md.edges, md.faces,
+         faces_uv, n_uvsets, faces_col, problems) = _reconstruct_geometry(gnode)
+        self.warnings.extend("mesh '%s': %s" % (md.name, p) for p in problems)
+
+        for s in range(n_uvsets):
+            set_name, coords = _uv_coords(gnode, s)
+            if not coords:
+                continue
+            per_face = [fu.get(s) if fu else None for fu in faces_uv]
+            md.uv_sets.append((set_name, coords))
+            md.face_uv_sets.append(per_face)
+
+        for si, (set_name, colors) in enumerate(_color_sets(gnode)):
+            if colors:
+                md.color_sets.append(
+                    (set_name, colors, [fc_.get(si) for fc_ in faces_col]))
+        current = gnode.attr_tokens('ccls')
+        names = [c[0] for c in md.color_sets]
+        md.active_color = names.index(current[0]) \
+            if current and current[0] in names else 0
+
+        # is this geometry driven by a skinCluster?
+        skin = self._mesh_skin(render)
+        md.is_skinned = skin is not None
+        if skin is not None:
+            gmx = as_floats(skin.attr_tokens('gm'))
+            md.skin_geom = gmx[:16] if len(gmx) >= 16 else None
+        # respect Maya visibility: hidden if .v is off on the transform or
+        # any ancestor (catches the FaceFitSkeleton rig-fit helpers and the
+        # closed-mouth teeth/tongue Maya keeps hidden)
+        md.hidden = self._hidden_by_visibility(tr) or \
+            self._hidden_by_visibility(geo)
+        return md
+
+    def _layer_hidden(self):
+        """Names of nodes sitting in a display layer that is switched off."""
+        if self._hidden_by_layer is None:
+            hidden = set()
+            for layer in self.scene.of_type('displayLayer'):
+                v = layer.attr_tokens('v')
+                if v and v[0] in _OFF:
+                    hidden.update(dn for dn, _ in
+                                  self.scene.dests_of(layer.name, 'di'))
+            self._hidden_by_layer = hidden
+        return self._hidden_by_layer
 
     def _hidden_by_visibility(self, node_name):
         cur = self.scene.nodes.get(node_name)
         depth = 0
         while cur is not None and depth < 256:
             v = cur.attr_tokens('v')
-            if v and v[0] in ('no', '0', 'off', 'false'):
+            if (v and v[0] in _OFF) or cur.name in self._layer_hidden():
                 return True
             cur = self.scene.nodes.get(cur.parent) if cur.parent else None
             depth += 1
         return False
 
-    def _mesh_is_skinned(self, render_shape):
-        for sc in self.scene.of_type('skinCluster'):
-            if self._nearest_mesh(sc.name) == render_shape:
-                return True
-        return False
+    def _mesh_skin(self, render_shape):
+        """The skinCluster deforming a mesh shape, or None."""
+        if self._skin_of_shape is None:
+            self._skin_of_shape = {}
+            for sc in self.scene.of_type('skinCluster'):
+                shape = self._nearest_mesh(sc.name)
+                if shape is not None:
+                    self._skin_of_shape.setdefault(shape, sc)
+        return self._skin_of_shape.get(render_shape)
 
     # -- skeleton --------------------------------------------------------
     def joints_in_order(self):
-        """All joints, bone-parents guaranteed before children."""
+        """All joints, bone-parents guaranteed before children.  Iterative, so
+        a chain thousands of joints deep (a tail, a rope) cannot exhaust the
+        recursion limit and a parent loop in a damaged file cannot spin."""
         joints = {j.name: j for j in self.scene.of_type('joint')}
         self._joint_name_set = set(joints)
         ordered = []
         emitted = set()
-
-        def emit(name):
-            if name in emitted or name not in joints:
-                return
-            bp = self._nearest_joint_ancestor(name)
-            if bp in joints and bp not in emitted:
-                emit(bp)
-            emitted.add(name)
-            ordered.append(self._joint_data(joints[name]))
-
         for n in self.scene.order:
-            if n in joints:
-                emit(n)
+            if n not in joints or n in emitted:
+                continue
+            chain, seen = [], set()
+            cur = n
+            while cur in joints and cur not in emitted and cur not in seen:
+                chain.append(cur)
+                seen.add(cur)
+                cur = self._nearest_joint_ancestor(cur)
+            for name in reversed(chain):
+                emitted.add(name)
+                try:
+                    ordered.append(self._joint_data(joints[name]))
+                except (ValueError, IndexError, OverflowError) as exc:
+                    self.warnings.append("joint '%s' has damaged values (%s); "
+                                         "defaults used" % (name, exc))
+                    jd = JointData(name)
+                    jd.parent = joints[name].parent
+                    jd.bone_parent = self._nearest_joint_ancestor(name)
+                    ordered.append(jd)
         return ordered
 
     def _nearest_joint_ancestor(self, name):
@@ -395,7 +507,10 @@ class MAImport:
                 jd.radius = float(radi[0])
             except ValueError:
                 pass
-        jd.t = _pad3(jd.t); jd.r = _pad3(jd.r); jd.jo = _pad3(jd.jo)
+        lin, ang = self.scene.cm_per_unit, self.scene.deg_per_unit
+        jd.t = tuple(v * lin for v in _pad3(jd.t))
+        jd.r = tuple(v * ang for v in _pad3(jd.r))
+        jd.jo = tuple(v * ang for v in _pad3(jd.jo))
         # custom attributes (preserve the rig's per-joint metadata)
         for spec in node.add_attrs:
             key = spec.get('ln') or spec.get('sn')
@@ -418,20 +533,28 @@ class MAImport:
     def skins(self):
         out = []
         for sc in self.scene.of_type('skinCluster'):
-            mesh_shape = self._nearest_mesh(sc.name)
-            if mesh_shape is None:
+            try:
+                sd = self._skin_data(sc)
+            except Exception as exc:
+                self.warnings.append("skin '%s' skipped: %s" % (sc.name, exc))
                 continue
-            sd = SkinData(sc.name)
-            sd.mesh = self._shape_to_transform(mesh_shape) or mesh_shape
-            # influence index -> joint
-            for attr, srcs in self.scene.iter_dest_prefix(sc.name, 'ma['):
-                m = re.search(r'ma\[(\d+)\]', attr)
-                if m and srcs:
-                    sd.influences[int(m.group(1))] = srcs[0][0]
-            # weights
-            self._decode_weights(sc, sd)
-            out.append(sd)
+            if sd is not None:
+                out.append(sd)
         return out
+
+    def _skin_data(self, sc):
+        mesh_shape = self._nearest_mesh(sc.name)
+        if mesh_shape is None:
+            return None
+        sd = SkinData(sc.name)
+        sd.mesh = self._shape_to_transform(mesh_shape) or mesh_shape
+        # influence index -> joint
+        for attr, srcs in self.scene.iter_dest_prefix(sc.name, 'ma['):
+            m = re.search(r'ma\[(\d+)\]', attr)
+            if m and srcs:
+                sd.influences[int(m.group(1))] = srcs[0][0]
+        self._decode_weights(sc, sd)
+        return sd
 
     def _decode_weights(self, sc, sd):
         for name, atype, toks in sc.set_attrs:
@@ -442,27 +565,43 @@ class MAImport:
                 continue
             a = int(m.group(1))
             b = int(m.group(2)) if m.group(2) else a
-            i = 0
-            ln = len(toks)
-            for vtx in range(a, b + 1):
-                if i >= ln:
-                    break
-                cnt = int(toks[i]); i += 1
-                wmap = {}
-                for _ in range(cnt):
-                    inf = int(toks[i]); w = float(toks[i + 1]); i += 2
-                    joint = sd.influences.get(inf)
-                    if joint and w != 0.0:
-                        wmap[joint] = wmap.get(joint, 0.0) + w
-                if wmap:
-                    sd.weights[vtx] = wmap
+            toks = value_tokens(toks)
+            try:
+                self._read_weight_block(sd, toks, a, b)
+            except (IndexError, ValueError, OverflowError):
+                self.warnings.append("skin '%s': weight data is damaged near "
+                                     "vertex %s" % (sc.name, a))
+
+    def _read_weight_block(self, sd, toks, a, b):
+        i = 0
+        ln = len(toks)
+        for vtx in range(a, b + 1):
+            if i >= ln:
+                break
+            cnt = int(toks[i]); i += 1
+            # Maya may split one vertex's sparse list across two setAttr
+            # blocks (wl[0:60] ends and wl[60:117] starts with vertex
+            # 60), so merge into what an earlier block already gave.
+            wmap = sd.weights.get(vtx, {})
+            for _ in range(cnt):
+                inf = int(toks[i]); w = float(toks[i + 1]); i += 2
+                joint = sd.influences.get(inf)
+                if joint and w != 0.0:
+                    wmap[joint] = wmap.get(joint, 0.0) + w
+            if wmap:
+                sd.weights[vtx] = wmap
 
     # -- blend shapes ----------------------------------------------------
     def blendshapes(self):
         """{mesh transform: [ShapeData, ...]} for mesh-deforming blendShapes."""
         out = {}
         for bs in self.scene.of_type('blendShape'):
-            targets = self._blendshape_targets(bs)
+            try:
+                targets = self._blendshape_targets(bs)
+            except Exception as exc:
+                self.warnings.append("blendShape '%s' skipped: %s"
+                                     % (bs.name, exc))
+                continue
             if not targets:
                 continue
             mesh_shape = self._nearest_mesh(bs.name)
@@ -474,23 +613,34 @@ class MAImport:
 
     def _blendshape_targets(self, bs):
         aliases = self._target_aliases(bs)
-        # gather geometry targets grouped by itg index
+        weights = {}
+        for name, atype, toks in bs.set_attrs:
+            mw = re.match(r'w\[(\d+)\]$', name)
+            toks = value_tokens(toks) if mw else None
+            if mw and toks:
+                try:
+                    weights[int(mw.group(1))] = float(toks[0])
+                except ValueError:
+                    pass
+        # gather geometry targets grouped by itg index; an in-between shape
+        # (iti 5500 and so on) is skipped in favour of the full one (6000)
         groups = {}
         for name, atype, toks in bs.set_attrs:
             mi = re.match(r'it\[0\]\.itg\[(\d+)\]\.iti\[(\d+)\]\.(ipt|ict)', name)
             if not mi:
                 continue
-            g = int(mi.group(1))
-            which = mi.group(3)
-            groups.setdefault(g, {})[which] = toks
+            g, iti, which = int(mi.group(1)), int(mi.group(2)), mi.group(3)
+            groups.setdefault(g, {}).setdefault(iti, {})[which] = toks
+        groups = {g: items[max(items)] for g, items in groups.items()}
         targets = []
         for g in sorted(groups):
             data = groups[g]
             if 'ipt' not in data:
                 continue
-            pts = _decode_point_array(data['ipt'])
+            pts = _decode_point_array(value_tokens(data['ipt']))
             comps = _decode_component_list(data.get('ict', []))
             sd = ShapeData(aliases.get(g, "target_%d" % g))
+            sd.weight = weights.get(g, 0.0)
             if comps and len(comps) == len(pts):
                 for vi, p in zip(comps, pts):
                     sd.deltas[vi] = p
@@ -509,7 +659,8 @@ class MAImport:
             if name != 'aal':
                 continue
             # tokens look like: { "name", "weight[0]", "name2", "weight[1]" }
-            cleaned = [t for t in toks if t not in ('{', '}', ',')]
+            cleaned = [t for t in value_tokens(toks)
+                       if t not in ('{', '}', ',')]
             for k in range(0, len(cleaned) - 1, 2):
                 alias = cleaned[k]
                 wm = re.search(r'weight\[(\d+)\]', cleaned[k + 1])
@@ -528,14 +679,19 @@ class MAImport:
             mat_node = self.scene.nodes.get(srcs[0][0])
             if mat_node is None:
                 continue
-            out[sg.name] = self._material_data(mat_node)
+            try:
+                out[sg.name] = self._material_data(mat_node)
+            except Exception as exc:
+                self.warnings.append("material '%s' skipped: %s"
+                                     % (mat_node.name, exc))
         return out
 
     # base-colour attribute across material types: lambert/blinn/phong use .c,
     # Arnold aiStandardSurface and Autodesk standardSurface use .baseColor/.bc,
-    # some shaders use .color / .dc. Try them in order.
+    # some shaders use .color / .dc. Try them in order.  Lambert's emission is
+    # .ic (incandescence); .it is its transparency and .ec blinn's eccentricity.
     _COLOR_ATTRS = ('c', 'baseColor', 'bc', 'color', 'dc')
-    _EMISSION_ATTRS = ('it', 'emissionColor', 'ec')
+    _EMISSION_ATTRS = ('ic', 'emissionColor', 'emc')
 
     def _material_data(self, node):
         md = MaterialData(node.name)
@@ -550,8 +706,9 @@ class MAImport:
             if len(e) >= 3:
                 md.incandescence = tuple(e[:3])
                 break
-        trn = as_floats(node.attr_tokens('tc'))
-        if len(trn) >= 3:
+        trn = as_floats(node.attr_tokens('it'))
+        if len(trn) >= 3 and node.ntype in ('lambert', 'blinn', 'phong',
+                                            'phongE', 'anisotropic'):
             md.transparency = tuple(trn[:3])
         # texture wired into the base colour, whichever attribute holds it
         for a in self._COLOR_ATTRS:
@@ -564,9 +721,35 @@ class MAImport:
                         md.tex_prefix = _texture_prefix(ftn[0])
             if 'baseColor' in md.maya_textures:
                 break
+        # a bump2d between a file and the shader's normal input
+        for attr in ('n', 'normalCamera'):
+            for src, _ in self.scene.sources_of(node.name, attr):
+                bump = self.scene.nodes.get(src)
+                if bump is None or bump.ntype != 'bump2d':
+                    continue
+                path = self._file_path(bump.name, 'bv')
+                if path:
+                    md.maya_textures['normal'] = path
+                    md.normal_mode = int(_number(bump, 'bi', 0))
+                    md.bump_depth = _number(bump, 'bd', 1.0)
+        for attr in self._EMISSION_ATTRS:
+            path = self._file_path(node.name, attr)
+            if path:
+                md.maya_textures['emissive'] = path
+                break
         if md.tex_prefix is None:
             md.tex_prefix = _texture_prefix_from_name(node.name)
         return md
+
+    def _file_path(self, node_name, attr):
+        """Image path of the first file node feeding ``node.attr``."""
+        for src, _ in self.scene.sources_of(node_name, attr):
+            fnode = self.scene.nodes.get(src)
+            if fnode is not None and fnode.ntype == 'file':
+                ftn = fnode.attr_tokens('ftn')
+                if ftn:
+                    return ftn[0]
+        return None
 
     def mesh_material_map(self):
         """{shape name: [(shadingEngine, face_indices | None), ...]}.
@@ -633,44 +816,6 @@ class MAImport:
             out.append(cd)
         return out
 
-    # -- constraints (experimental rig) ---------------------------------
-    _CONSTRAINT_OUT = ('ctx', 'cty', 'ctz', 'crx', 'cry', 'crz',
-                       'csx', 'csy', 'csz')
-    _CONSTRAINT_TYPES = ('pointConstraint', 'orientConstraint',
-                         'parentConstraint', 'scaleConstraint', 'aimConstraint')
-
-    def constraints(self):
-        names = getattr(self, '_joint_name_set', None) or \
-            set(self.scene.by_type.get('joint', []))
-        self._joint_name_set = names
-        out = []
-        for ctype in self._CONSTRAINT_TYPES:
-            short = ctype.replace('Constraint', '')
-            for node in self.scene.of_type(ctype):
-                cd = ConstraintData(node.name, short)
-                # constrained object = where any output attr connects to
-                for oa in self._CONSTRAINT_OUT:
-                    dests = self.scene.dests_of(node.name, oa)
-                    if dests:
-                        cd.constrained = dests[0][0]
-                        break
-                if cd.constrained is None:
-                    continue
-                cd.constrained_is_joint = cd.constrained in names
-                # targets = sources feeding tg[i].tt / .tr / .ts
-                tgt = {}
-                for sub in ('tt', 'tr', 'ts', 'tpm'):
-                    for attr, srcs in self.scene.iter_dest_prefix(node.name, 'tg['):
-                        if not attr.endswith('.' + sub):
-                            continue
-                        m = re.search(r'tg\[(\d+)\]', attr)
-                        if m and srcs:
-                            tgt.setdefault(int(m.group(1)), srcs[0][0])
-                cd.targets = [(tgt[i], 1.0) for i in sorted(tgt)]
-                if cd.targets:
-                    out.append(cd)
-        return out
-
     def ik_handles(self):
         names = getattr(self, '_joint_name_set', None) or \
             set(self.scene.by_type.get('joint', []))
@@ -684,12 +829,31 @@ class MAImport:
                 eff = sn
             if eff is not None:
                 effnode = self.scene.nodes.get(eff)
-                d.end_joint = effnode.parent if effnode else None
+                d.eff_parent = effnode.parent if effnode else None
+                d.end_joint = self._effector_joint(effnode, names)
             for sn, sa in self.scene.sources_of(ik.name, 'hsv'):
                 d.solver = sn
             if d.start_joint in names and d.end_joint in names:
                 out.append(d)
         return out
+
+    def _effector_joint(self, effnode, names):
+        """Maya parents an effector under the joint *before* the chain end and
+        offsets it onto the end joint, so the end joint is the child of the
+        effector's parent that the effector's offset lands on."""
+        if effnode is None or effnode.parent not in names:
+            return None
+        parent = effnode.parent
+        kids = [self.scene.nodes[n] for n in self.scene.order
+                if n in names and self.scene.nodes[n].parent == parent]
+        if not kids:
+            return parent
+        want = as_floats(effnode.attr_tokens('t'))[:3] or [0.0, 0.0, 0.0]
+
+        def gap(k):
+            t = as_floats(k.attr_tokens('t'))[:3] or [0.0, 0.0, 0.0]
+            return sum((a - b) ** 2 for a, b in zip(t, want))
+        return min(kids, key=gap).name
 
     # -- cameras --------------------------------------------------------
     def cameras(self):
@@ -700,10 +864,18 @@ class MAImport:
             tr = cam.parent or cam.name
             if tr in defaults:
                 continue
-            fl = as_floats(cam.attr_tokens('fl'))
+            def num(attr, default):
+                values = as_floats(cam.attr_tokens(attr))
+                return values[0] if values else default
+            aperture = as_floats(cam.attr_tokens('cap'))     # inches
+            lin = self.scene.cm_per_unit                     # fl stays in mm
             out.append(dict(name=tr, shape=cam.name,
-                            focal=fl[0] if fl else 35.0,
-                            ortho=as_bool(cam.attr_tokens('o'))))
+                            focal=num('fl', 35.0),
+                            ortho=as_bool(cam.attr_tokens('o')),
+                            ortho_width=num('ow', 30.0 / lin) * lin,
+                            sensor_width=aperture[0] * 25.4 if aperture else None,
+                            near=num('ncp', 0.1 / lin) * lin,
+                            far=num('fcp', 10000.0 / lin) * lin))
         return out
 
     # -- lights ---------------------------------------------------------
@@ -724,20 +896,23 @@ class MAImport:
                                 btype=btype,
                                 color=tuple(col[:3]) if len(col) >= 3 else (1, 1, 1),
                                 energy=inten[0] if inten else 1.0,
-                                spot_angle=cone[0] if cone else 40.0))
+                                spot_angle=cone[0] * self.scene.deg_per_unit
+                                if cone else 40.0))
         return out
 
     # -- animation (time-based animCurves) ------------------------------
-    _ANIM_ATTR = {
-        'tx': ('location', 0), 'ty': ('location', 1), 'tz': ('location', 2),
-        'rx': ('rotation_euler', 0), 'ry': ('rotation_euler', 1),
-        'rz': ('rotation_euler', 2),
-        'sx': ('scale', 0), 'sy': ('scale', 1), 'sz': ('scale', 2),
+    _ANIM_ATTRS = {
+        'tx': 'tx', 'ty': 'ty', 'tz': 'tz', 'rx': 'rx', 'ry': 'ry', 'rz': 'rz',
+        'sx': 'sx', 'sy': 'sy', 'sz': 'sz',
+        'translateX': 'tx', 'translateY': 'ty', 'translateZ': 'tz',
+        'rotateX': 'rx', 'rotateY': 'ry', 'rotateZ': 'rz',
+        'scaleX': 'sx', 'scaleY': 'sy', 'scaleZ': 'sz',
     }
 
     def animations(self):
-        """{node name: [ (blender_path, array_index, [(frame, value), ...]) ]}
-        for time-based animCurves only (TA/TL/TU/TT)."""
+        """{node name: {attr: [(frame, value), ...]}} for time-based animCurves
+        driving translate / rotate / scale directly.  Values stay in Maya's
+        units (centimetres, degrees); the builder converts them."""
         out = {}
         for ctype in ('animCurveTL', 'animCurveTA', 'animCurveTU', 'animCurveTT'):
             for cv in self.scene.of_type(ctype):
@@ -745,32 +920,40 @@ class MAImport:
                 if not keys:
                     continue
                 for dn, da in self.scene.dests_of(cv.name, 'o'):
-                    mapping = self._ANIM_ATTR.get(da)
-                    if not mapping:
-                        continue
-                    path, idx = mapping
-                    is_rot = path == 'rotation_euler'
-                    pts = [(t, math.radians(v) if is_rot else v) for t, v in keys]
-                    out.setdefault(dn, []).append((path, idx, pts))
+                    attr = self._ANIM_ATTRS.get(da)
+                    if attr:
+                        out.setdefault(dn, {})[attr] = keys
         return out
 
     def _anim_keys(self, cv, ctype):
-        toks = cv.attr_tokens('ktv')
-        fl = as_floats(toks)
-        keys = []
-        for i in range(0, len(fl) - 1, 2):
-            keys.append((fl[i], fl[i + 1]))
+        fl = as_floats(cv.attr_tokens('ktv'))
+        # TL / TA values are in the scene's UI units; TU / TT are unitless
+        k = {'animCurveTL': self.scene.cm_per_unit,
+             'animCurveTA': self.scene.deg_per_unit}.get(ctype, 1.0)
+        keys = [(fl[i], fl[i + 1] * k) for i in range(0, len(fl) - 1, 2)]
+        keys.sort(key=lambda k: k[0])
         return keys
 
 
 # ---------------------------------------------------------------------------
 # small decoders / helpers
 # ---------------------------------------------------------------------------
+def _number(node, attr, default):
+    """First number of an attribute, or ``default`` if absent or damaged."""
+    values = as_floats(node.attr_tokens(attr))
+    return values[0] if values and math.isfinite(values[0]) else default
+
+
 def _pad3(t):
     t = list(t)
     while len(t) < 3:
         t.append(0.0)
     return tuple(t[:3])
+
+
+# one token per line, so ^ means "at the start of a token"
+_COMPONENT_RE = re.compile(r'^(?:vtx|cp|pt)\[(\d+)(?::(\d+))?\]', re.MULTILINE)
+_FACE_RE = re.compile(r'^f\[(\d+)(?::(\d+))?\]', re.MULTILINE)
 
 
 def _decode_point_array(toks):
@@ -782,40 +965,33 @@ def _decode_point_array(toks):
     except (ValueError, IndexError):
         return []
     fl = as_floats(toks[1:])
-    pts = []
     # 4 components per point (x, y, z, w); fall back to 3 if that fits better
     stride = 4 if len(fl) >= count * 4 else 3
-    for i in range(count):
-        base = i * stride
-        if base + 2 < len(fl):
-            pts.append((fl[base], fl[base + 1], fl[base + 2]))
-    return pts
+    return list(zip(fl[0::stride], fl[1::stride], fl[2::stride]))[:count]
+
+
+def _decode_ranges(values, pattern):
+    """Index ranges named by a list of components.  Undecoded text is searched
+    directly (a quote becomes a line break), skipping the per-token split."""
+    if isinstance(values, LazyValues):
+        text = values.raw.replace('"', "\n")
+    else:
+        text = "\n".join(values)
+    out = []
+    for first, last in pattern.findall(text):
+        a = int(first)
+        out.extend(range(a, int(last or a) + 1))
+    return out
 
 
 def _decode_component_list(toks):
     """Maya 'componentList': <count> then strings like vtx[3], vtx[5:9]."""
-    out = []
-    for t in toks:
-        m = re.match(r'(?:vtx|cp|pt)\[(\d+)(?::(\d+))?\]', t)
-        if not m:
-            continue
-        a = int(m.group(1))
-        b = int(m.group(2)) if m.group(2) else a
-        out.extend(range(a, b + 1))
-    return out
+    return _decode_ranges(toks, _COMPONENT_RE)
 
 
 def _decode_face_list(toks):
     """Maya face 'componentList': <count> then f[3], f[5:9], ..."""
-    out = []
-    for t in toks:
-        m = re.match(r'f\[(\d+)(?::(\d+))?\]', t)
-        if not m:
-            continue
-        a = int(m.group(1))
-        b = int(m.group(2)) if m.group(2) else a
-        out.extend(range(a, b + 1))
-    return out
+    return _decode_ranges(toks, _FACE_RE)
 
 
 def _decode_nurbs_curve(toks):
@@ -832,7 +1008,6 @@ def _decode_nurbs_curve(toks):
     except (ValueError, IndexError):
         return [], 1, 0
     idx = 5
-    n_knots_decl = None
     # Some files write the knot count explicitly next; detect numerically.
     # Maya layout: <knotCount> <knots...> <cvCount> <cv x y z ...>
     try:
