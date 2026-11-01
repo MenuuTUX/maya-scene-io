@@ -7,6 +7,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 
 ### Fixed
 
+- Objects were built from translate, rotate and scale only. Maya's rotate and
+  scale pivots, the pivot translates it adds when a pivot moves, the rotate
+  axis and shear were ignored, so any object with a moved pivot landed in the
+  wrong place, sometimes metres away. In the Lantana sample 6,057 of 10,231
+  transforms carry a pivot translate. Transforms now use Maya's full matrix,
+  for `.ma` and `.mb` alike.
+- An animated scene opened on its first frame instead of the frame it was
+  saved on (`time1.outTime`), so animated objects such as drawers sat in a
+  different pose than in Maya.
 - A `.ma` saved with a working unit other than centimetres or degrees
   (`currentUnit -l meter`, `inch`, `-a radian`, ...) came in at the wrong size
   and rotation: translations, joint orients, camera clip planes, spot cone
