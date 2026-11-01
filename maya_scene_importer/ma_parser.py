@@ -126,6 +126,7 @@ class MayaScene:
         self.linear_unit = 'cm'    # currentUnit -l
         self.angle_unit = 'deg'    # currentUnit -a
         self.play_range = None     # (min, max) from playbackOptions
+        self.current_frame = None  # time1.outTime: the frame it was saved on
         self.references = []       # files this scene references (not loaded)
         self.skipped = 0           # statements too damaged to read
         self.paths = {}            # "|group|node" -> registered node name
@@ -291,6 +292,7 @@ class MAParser:
         self.scene = MayaScene()
         self._cur = None         # current node (target of setAttr/addAttr)
         self._select = None      # node named by an explicit `select`
+        self._time1 = MNode('time1', 'time')   # not a scene node; holds .o
 
     def parse_file(self, path):
         with open(path, 'rb') as fh:
@@ -321,6 +323,9 @@ class MAParser:
                     handler(self, toks[1:])
                 except (IndexError, ValueError):
                     self.scene.skipped += 1      # damaged or truncated statement
+        frame = as_floats(self._time1.attr_tokens('o'))
+        if frame:
+            self.scene.current_frame = frame[0]
         return self.scene
 
     # -- individual commands ---------------------------------------------
@@ -480,6 +485,8 @@ class MAParser:
         name = self._resolve(name)
         if name and name in self.scene.nodes:
             self._select = self.scene.nodes[name]
+        elif name and name.lstrip(':') == 'time1':
+            self._select = self._time1
 
     def _c_parent(self, args):
         # reparent shapes: `parent -s -nc -r -add "shape" "transform"` etc.

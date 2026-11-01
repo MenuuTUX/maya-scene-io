@@ -99,7 +99,23 @@ def _node_local(node, scene, ov=None):
         JO = Euler([math.radians(a * ang) for a in jo],
                    'XYZ').to_matrix().to_4x4()
         return T @ JO @ R @ S
-    return T @ R @ S
+
+    # Maya's full transform: rotate and scale about their pivots, plus the
+    # pivot translates Maya adds to keep an object in place when its pivot
+    # moves, the rotate axis and shear.  In column-vector order:
+    #   T . RPT . RP . R . RA . RP^-1 . SPT . SP . SH . S . SP^-1
+    def vec(attr):
+        v = _triple(ma_parser.as_floats(node.attr_tokens(attr)), (0, 0, 0))
+        return Vector((v[0] * lin, v[1] * lin, v[2] * lin))
+    rp, sp = vec('rp'), vec('sp')
+    ra = _triple(ma_parser.as_floats(node.attr_tokens('ra')), (0, 0, 0))
+    RA = Euler([math.radians(a * ang) for a in ra], 'XYZ').to_matrix().to_4x4()
+    xy, xz, yz = _triple(ma_parser.as_floats(node.attr_tokens('sh')), (0, 0, 0))
+    SH = Matrix(((1, xy, xz, 0), (0, 1, yz, 0), (0, 0, 1, 0), (0, 0, 0, 1)))
+    return (T @ Matrix.Translation(vec('rpt')) @ Matrix.Translation(rp)
+            @ R @ RA @ Matrix.Translation(-rp)
+            @ Matrix.Translation(vec('spt')) @ Matrix.Translation(sp)
+            @ SH @ S @ Matrix.Translation(-sp))
 
 
 def _convert(gm, world):
@@ -343,6 +359,9 @@ def _build(filepath, opts, report, progress, parse=None):
                 lo, hi = scene.play_range or span
                 bpy.context.scene.frame_start = int(lo)
                 bpy.context.scene.frame_end = int(max(hi, lo))
+                # open on the frame the file was saved on, as Maya does
+                if scene.current_frame is not None:
+                    bpy.context.scene.frame_set(int(round(scene.current_frame)))
         except Exception as exc:
             import traceback
             traceback.print_exc()
