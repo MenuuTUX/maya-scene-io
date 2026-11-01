@@ -7,6 +7,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 
 ### Fixed
 
+- Animation was keyed only on Maya's key frames, and Blender blended location
+  and rotation separately in between. A door turning about its hinge drifted
+  off it mid-swing (up to 5 m in the Lantana sample). Every frame of the key
+  range is now keyed from the full Maya matrix.
+- Curves were sampled as straight lines. They now follow each key's Maya
+  tangent type: linear, flat, stepped, spline, and the smooth auto, clamped
+  and plateau types, which ease in and out without overshooting.
+- A mesh under an animated group (a door and its handle in a `DoorSet`) did
+  not move, and an animated group with no mesh of its own was skipped.
 - Objects were built from translate, rotate and scale only. Maya's rotate and
   scale pivots, the pivot translates it adds when a pivot moves, the rotate
   axis and shear were ignored, so any object with a moved pivot landed in the
