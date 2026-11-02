@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "maya_ascii_scene_io"
-version = "1.0.0"
+version = "1.1.0"
 name = "Maya ASCII Scene IO"
 tagline = "Import Maya .ma and .mb scenes, export .ma, with rig support"
 maintainer = "Shibashish Das <shibashish.das07@gmail.com>"

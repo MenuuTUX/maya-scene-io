@@ -1,0 +1,138 @@
+name: Release
+
+# Push a tag such as v1.1.0 to build, test and publish a GitHub Release.
+# Run it by hand (Actions > Release > Run workflow) to build and test without
+# publishing.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  BLENDER_VERSION: "4.2.3"
+
+jobs:
+  build:
+    name: Build packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the manifests
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          for f in maya_scene_importer/blender_manifest.toml; do
+            found=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$f")
+            [ "$found" = "$tag" ] || { echo "$f has $found, tag is $tag"; exit 1; }
+          done
+
+      - name: Install Blender
+        run: |
+          url="https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          curl -fsSL "$url" | tar -xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
+
+      - name: Build full edition (GitHub release)
+        run: blender --background --command extension build --source-dir maya_scene_importer --output-dir dist
+
+      - name: Build native edition (Blender Extensions)
+        run: python3 scripts/build_native_extension.py --blender blender --output-dir dist
+
+      - name: Validate both packages
+        run: |
+          for z in dist/*.zip; do blender --background --command extension validate "$z"; done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/*.zip
+          if-no-files-found: error
+
+  test:
+    name: Install on ${{ matrix.os }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      - name: Install Blender (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          url="https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          curl -fsSL "$url" | tar -xJ -C "$RUNNER_TEMP"
+          echo "BLENDER=$RUNNER_TEMP/blender-${BLENDER_VERSION}-linux-x64/blender" >> "$GITHUB_ENV"
+
+      - name: Install Blender (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/b.dmg" "https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-macos-arm64.dmg"
+          hdiutil attach "$RUNNER_TEMP/b.dmg" -mountpoint /Volumes/Blender -nobrowse -quiet
+          cp -R /Volumes/Blender/Blender.app "$RUNNER_TEMP/"
+          hdiutil detach /Volumes/Blender -quiet
+          echo "BLENDER=$RUNNER_TEMP/Blender.app/Contents/MacOS/Blender" >> "$GITHUB_ENV"
+
+      - name: Install Blender (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/b.zip" "https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-windows-x64.zip"
+          unzip -q "$RUNNER_TEMP/b.zip" -d "$RUNNER_TEMP"
+          echo "BLENDER=$RUNNER_TEMP/blender-${BLENDER_VERSION}-windows-x64/blender.exe" >> "$GITHUB_ENV"
+
+      - name: Parser self-check (no Blender)
+        shell: bash
+        run: |
+          python -m compileall -q maya_scene_importer marketplace
+          cd maya_scene_importer && python -c "import ma_parser, mb_parser, ma_model; print('imports ok')"
+
+      - name: Install and enable each package
+        shell: bash
+        run: |
+          cat > smoke.py <<'EOF'
+          import sys, bpy
+          zip_path = sys.argv[sys.argv.index("--") + 1]
+          bpy.ops.extensions.package_install_files(
+              filepath=zip_path, repo="user_default", enable_on_install=True)
+          assert any("maya" in n for n in bpy.context.preferences.addons.keys()), "not enabled"
+          assert hasattr(bpy.ops.import_scene, "maya_ascii"), "operator missing"
+          assert hasattr(bpy.ops.export_scene, "maya_ascii"), "operator missing"
+          print("SMOKE OK", zip_path)
+          EOF
+          for z in dist/*.zip; do
+            "$BLENDER" --background --factory-startup --python-exit-code 1 --python smoke.py -- "$PWD/$z"
+          done
+
+  release:
+    name: Publish GitHub Release
+    needs: [build, test]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      - name: Pull this version's notes from the changelog
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 ~ "^## "v"( |$)" {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --title "$GITHUB_REF_NAME" --notes-file notes.md
