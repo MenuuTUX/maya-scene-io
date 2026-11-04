@@ -93,6 +93,9 @@ class MaterialData:
         self.maya_textures = {}       # slot -> original path string
         self.normal_mode = 1          # bump2d: 0 bump, 1 tangent, 2 object space
         self.bump_depth = 1.0
+        self.metalness = None         # None: shader has no such value
+        self.roughness = None
+        self.emission_strength = 1.0  # Maya's incandescence has no weight
 
 
 class CurveData:
@@ -693,6 +696,21 @@ class MAImport:
     _COLOR_ATTRS = ('c', 'baseColor', 'bc', 'color', 'dc')
     _EMISSION_ATTRS = ('ic', 'emissionColor', 'emc')
 
+    # Arnold's aiStandardSurface and Autodesk's standardSurface share one
+    # parameter set. Each property lists its long name, then the short names
+    # Maya may write into a .ma file; the first one present wins.
+    _PBR_TYPES = ('aiStandardSurface', 'standardSurface')
+    _PBR_ATTRS = {
+        'metalness': ('metalness', 'm'),
+        'roughness': ('specularRoughness', 'sr'),
+        'opacity': ('opacity', 'opc', 'o'),
+        'emission': ('emission', 'e'),
+        'emission_color': ('emissionColor', 'emc', 'ec'),
+    }
+    # what both shaders use when the file stores no roughness
+    _PBR_DEFAULT_ROUGHNESS = 0.2
+    _NORMAL_ATTRS = ('n', 'normalCamera')
+
     def _material_data(self, node):
         md = MaterialData(node.name)
         md.node_type = node.ntype
@@ -721,18 +739,17 @@ class MAImport:
                         md.tex_prefix = _texture_prefix(ftn[0])
             if 'baseColor' in md.maya_textures:
                 break
-        # a bump2d between a file and the shader's normal input
-        for attr in ('n', 'normalCamera'):
+        # a bump2d, aiBump2d or aiNormalMap between a file and the normal input
+        for attr in self._NORMAL_ATTRS:
             for src, _ in self.scene.sources_of(node.name, attr):
-                bump = self.scene.nodes.get(src)
-                if bump is None or bump.ntype != 'bump2d':
-                    continue
-                path = self._file_path(bump.name, 'bv')
-                if path:
-                    md.maya_textures['normal'] = path
-                    md.normal_mode = int(_number(bump, 'bi', 0))
-                    md.bump_depth = _number(bump, 'bd', 1.0)
-        for attr in self._EMISSION_ATTRS:
+                self._normal_source(md, self.scene.nodes.get(src))
+        pbr = node.ntype in self._PBR_TYPES
+        if pbr:
+            self._pbr_values(md, node)
+        emission = self._EMISSION_ATTRS
+        if pbr:
+            emission += self._PBR_ATTRS['emission_color']
+        for attr in emission:
             path = self._file_path(node.name, attr)
             if path:
                 md.maya_textures['emissive'] = path
@@ -740,6 +757,83 @@ class MAImport:
         if md.tex_prefix is None:
             md.tex_prefix = _texture_prefix_from_name(node.name)
         return md
+
+    def _first_values(self, node, names, count=1):
+        """Values of the first attribute in ``names`` that the file sets."""
+        for name in names:
+            values = as_floats(node.attr_tokens(name))
+            if len(values) >= count:
+                return values
+        return None
+
+    def _first_file(self, node_name, names):
+        for name in names:
+            path = self._file_path(node_name, name)
+            if path:
+                return path
+        return None
+
+    def _normal_source(self, md, src):
+        if src is None:
+            return
+        if src.ntype == 'bump2d':
+            path = self._file_path(src.name, 'bv')
+            mode, depth = int(_number(src, 'bi', 0)), _number(src, 'bd', 1.0)
+        elif src.ntype == 'aiNormalMap':
+            path = self._first_file(src.name, ('input', 'i'))
+            mode, depth = 1, 1.0
+        elif src.ntype == 'aiBump2d':
+            path = self._first_file(src.name, ('bumpMap', 'bm'))
+            mode = 0
+            depth = self._first_values(src, ('bumpHeight', 'bh'))
+            depth = depth[0] if depth else 1.0
+        else:
+            return
+        if path:
+            md.maya_textures['normal'] = path
+            md.normal_mode = mode
+            md.bump_depth = depth
+
+    def _pbr_values(self, md, node):
+        """Metalness, roughness, opacity and emission of a standard surface."""
+        attrs = self._PBR_ATTRS
+        v = self._first_values(node, attrs['metalness'])
+        md.metalness = v[0] if v else 0.0
+        v = self._first_values(node, attrs['roughness'])
+        md.roughness = v[0] if v else self._PBR_DEFAULT_ROUGHNESS
+        v = self._first_values(node, attrs['opacity'], 3)
+        if v:
+            md.transparency = tuple(1.0 - c for c in v[:3])
+        weight = self._first_values(node, attrs['emission'])
+        colour = self._first_values(node, attrs['emission_color'], 3)
+        mapped = self._first_file(
+            node.name, self._EMISSION_ATTRS + attrs['emission_color'])
+        if weight:
+            md.emission_strength = weight[0]
+        elif colour or mapped:
+            md.emission_strength = 0.0     # authored, but Maya's weight is 0
+        # else nothing authored: a map found by file name keeps full strength
+        md.incandescence = (tuple(colour[:3]) if colour else
+                            (1.0, 1.0, 1.0) if weight and weight[0] > 0
+                            else (0.0, 0.0, 0.0))
+        for slot, key in (('metallic', 'metalness'), ('roughness', 'roughness')):
+            path = self._first_file(node.name, attrs[key])
+            if path:
+                md.maya_textures[slot] = path
+        # say so when a texture sits on an input we do not read
+        known = set(self._COLOR_ATTRS + self._NORMAL_ATTRS)
+        for names in attrs.values():
+            known.update(names)
+        seen = set()
+        for attr, srcs in self.scene.iter_dest_prefix(node.name, ''):
+            base = attr.split('[', 1)[0]
+            if base in known or base in seen:
+                continue
+            if any(getattr(self.scene.nodes.get(s), 'ntype', None) == 'file'
+                   for s, _ in srcs):
+                seen.add(base)
+                self.warnings.append("material '%s': the texture on '%s' is "
+                                     "not imported" % (node.name, base))
 
     def _file_path(self, node_name, attr):
         """Image path of the first file node feeding ``node.attr``."""

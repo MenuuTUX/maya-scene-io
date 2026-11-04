@@ -22,13 +22,14 @@ Python interpreter and never open Blender.
 
 ```
 python -m compileall maya_scene_importer
-
-cd maya_scene_importer
-python -c "import ma_parser, ma_model; print('imports ok')"
+python -m unittest discover -s tests -v
+blender -b --factory-startup --python tests/check_blender_materials.py
 ```
 
-These checks cover Python syntax and the parser/model imports. The repository
-does not currently run a CI test suite.
+`compileall` checks Python syntax. The unit tests read small hand-written `.ma`
+scenes with plain Python, no Blender. The last command imports a synthetic scene
+in Blender and checks the resulting material. The repository does not run these
+in CI yet.
 
 ## Building the add-on
 

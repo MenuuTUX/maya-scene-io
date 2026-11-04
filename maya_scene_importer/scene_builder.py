@@ -819,6 +819,11 @@ def _build_material(md, basedir):
     if base:
         base.default_value = (md.color[0], md.color[1], md.color[2], 1.0)
 
+    # shader values; a texture linked below overrides the matching one
+    for slot, value in (('Metallic', md.metalness), ('Roughness', md.roughness)):
+        if value is not None and slot in bsdf.inputs:
+            bsdf.inputs[slot].default_value = value
+
     prefix = md.tex_prefix
 
     def add_tex(slot, non_color):
@@ -859,14 +864,16 @@ def _build_material(md, basedir):
         if em:
             nt.links.new(tex.outputs['Color'], em)
             if 'Emission Strength' in bsdf.inputs:
-                bsdf.inputs['Emission Strength'].default_value = 1.0
+                bsdf.inputs['Emission Strength'].default_value = \
+                    md.emission_strength
     elif any(md.incandescence):
         em = bsdf.inputs.get('Emission Color')
         if em:
             em.default_value = (md.incandescence[0], md.incandescence[1],
                                 md.incandescence[2], 1.0)
             if 'Emission Strength' in bsdf.inputs:
-                bsdf.inputs['Emission Strength'].default_value = 1.0
+                bsdf.inputs['Emission Strength'].default_value = \
+                    md.emission_strength
 
     # Normal
     npath = _find_texture(basedir, prefix, _SLOTS['normal'])

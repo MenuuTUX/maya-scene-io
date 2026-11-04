@@ -200,7 +200,7 @@ versions.
 - Control-rig logic does not transfer, as described above.
 - Driven shape keys do not drive. The 8 shape keys on the demo character are pose correctives. They import, but nothing in Blender triggers them as the joints move.
 - The native parser was developed against Maya 2023. Other versions should be fine for geometry and skeletons, since those formats are stable. Please open an issue if something breaks.
-- Materials beyond lambert, blinn and phong, such as Arnold aiStandardSurface, import as a plain material on the native path. Use the Maya bridge for those.
+- Arnold aiStandardSurface and Autodesk standardSurface bring across base colour, metalness, roughness, opacity and emission, plus file textures on those inputs and a normal or bump map. A texture wired straight from a file node to any other input, such as specular colour, subsurface or transmission, is not imported, and the import warns about each one. Maps routed through other nodes, such as aiRange or remapValue, are dropped without a warning. Saved scenes may use short attribute names, which are matched on a best-effort basis, so send a sample scene if a value you set in Maya does not arrive. Shaders other than lambert, blinn, phong and these two come in with a base colour, plus a normal or bump map when one is wired.
 
 ## Building from source
 

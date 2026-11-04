@@ -88,6 +88,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 
 ### Added
 
+- Arnold `aiStandardSurface` and Autodesk `standardSurface` materials now bring
+  across metalness, roughness, opacity and emission, not just base colour.
+  Textures wired to metalness or roughness are found through the Maya file
+  node, not only by a `_Metallic` or `_Roughness` file name. Normals through
+  `aiNormalMap` and `aiBump2d` are read as well as `bump2d`. An unset roughness
+  uses the shader's default of 0.2. A texture on an input the importer does not
+  read (specular colour, subsurface and so on) is listed in a warning.
+- A `tests/` folder: `python -m unittest discover -s tests` checks material
+  extraction with plain Python, and `tests/check_blender_materials.py` checks
+  the Blender side.
+
 - Maya Binary (`.mb`) import with no Maya installed. A new pure-Python reader
   (`mb_parser.py`) handles 64-bit (`FOR8`, Maya 2014 and later) and 32-bit
   (`FOR4`, older Maya) files. It reads meshes with UVs and per-face materials,
