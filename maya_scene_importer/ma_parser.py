@@ -77,7 +77,7 @@ class MNode:
     """A single Maya dependency / DAG node."""
 
     __slots__ = ("name", "ntype", "parent", "is_shape", "uuid",
-                 "set_attrs", "add_attrs", "_attr_index")
+                 "set_attrs", "add_attrs", "_attr_index", "origin")
 
     def __init__(self, name, ntype, parent=None, is_shape=False):
         self.name = name
@@ -85,6 +85,8 @@ class MNode:
         self.parent = parent          # parent node name (DAG) or None
         self.is_shape = is_shape       # created with the -s flag
         self.uuid = None
+        self.origin = None             # folder of the referenced file it came
+                                       # from; None for the scene itself
         # list of (attr_name, type_or_None, [tokens] | LazyValues), file order
         self.set_attrs = []
         # list of dicts describing addAttr (custom attributes)
@@ -126,7 +128,9 @@ class MayaScene:
         self.linear_unit = 'cm'    # currentUnit -l
         self.angle_unit = 'deg'    # currentUnit -a
         self.play_range = None     # (min, max) from playbackOptions
-        self.references = []       # files this scene references (not loaded)
+        self.references = []       # paths of the files this scene references
+        self.reference_info = []   # {'path', 'namespace', 'node'} for each
+        self.notes = []            # messages for the user, shown as warnings
         self.skipped = 0           # statements too damaged to read
         self.paths = {}            # "|group|node" -> registered node name
         self._path_of = {}         # registered node name -> "|group|node"
@@ -492,11 +496,26 @@ class MAParser:
                 self.scene.nodes[child].parent = newpar
 
     def _c_file(self, args):
-        # `file -r -ns "ns" -typ "mayaAscii" "path"` pulls in another scene
+        # `file -r -ns "ns" -rfn "nsRN" -typ "mayaAscii" "path"` pulls in
+        # another scene. Maya writes a `file -rdi` line first that only repeats
+        # the depth of the same reference, so only `-r` counts.
         flags = {val for kind, val in args if kind == 'word'}
         paths = [val for kind, val in args if kind == 'str']
-        if paths and flags & {'-r', '-reference', '-rdi', '-referenceDepthInfo'}:
-            self.scene.references.append(paths[-1])
+        if not paths or not flags & {'-r', '-reference'}:
+            return
+        info = {'path': paths[-1], 'namespace': None, 'node': None}
+        for (kind, val), (_, nxt) in zip(args, args[1:]):
+            if kind != 'word':
+                continue
+            if val in ('-ns', '-namespace'):
+                info['namespace'] = nxt
+            elif val in ('-rfn', '-referenceNode'):
+                info['node'] = nxt
+        key = (info['namespace'], info['path'])
+        if key not in {(i['namespace'], i['path'])
+                       for i in self.scene.reference_info}:
+            self.scene.references.append(info['path'])
+            self.scene.reference_info.append(info)
 
     def _c_currentUnit(self, args):
         for i, (kind, val) in enumerate(args[:-1]):

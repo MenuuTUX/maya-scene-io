@@ -88,6 +88,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 
 ### Added
 
+- Files a `.ma` scene references are now loaded and merged into the import,
+  each node under its reference's namespace (`rig:body`), as Maya does. Before,
+  they were listed in a warning and the scene came in without them. Nested
+  references, one file referenced twice, and a scene made only of references
+  all work. Paths are tried as written, then under the scene's folder and the
+  two above it, ignoring file name case. A missing, damaged or looping
+  reference is reported and skipped. Textures are looked up beside the
+  referenced file that holds the material. The control-rig builder now matches
+  `FK` and `IKX` names after a namespace. Edits stored in the scene for a
+  reference, such as moving the rig, are not applied; the import warns when
+  it sees them. `.mb` scenes do not load references yet.
 - Arnold `aiStandardSurface` and Autodesk `standardSurface` materials now bring
   across metalness, roughness, opacity and emission, not just base colour.
   Textures wired to metalness or roughness are found through the Maya file

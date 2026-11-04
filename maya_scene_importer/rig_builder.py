@@ -26,19 +26,28 @@ from mathutils import Vector
 from .scene_builder import bl_name
 
 
+def _split_namespace(name):
+    """'ns:Hip_R' -> ('ns:', 'Hip_R'). A referenced rig keeps its namespace on
+    every node, and Maya's naming prefixes (FK, IKX) go after it."""
+    ns, sep, base = name.rpartition(":")
+    return ns + sep, base
+
+
 def _control_for(bone, curves):
     """A deform joint <name> is driven through a Maya control such as FK<name>."""
-    for cand in ("FK" + bone, bone + "_CTRL", bone + "_ctrl", "Ctrl_" + bone,
-                 "CTRL_" + bone, bone + "_Ctrl"):
-        if cand in curves:
+    ns, base = _split_namespace(bone)
+    for cand in ("FK" + base, base + "_CTRL", base + "_ctrl", "Ctrl_" + base,
+                 "CTRL_" + base, base + "_Ctrl"):
+        if ns + cand in curves:
             return True
     return False
 
 
 def _strip_ik(name):
+    ns, base = _split_namespace(name)
     for p in ("IKX", "IKx", "IK_", "IK"):
-        if name.startswith(p):
-            return name[len(p):].lstrip("_")
+        if base.startswith(p):
+            return ns + base[len(p):].lstrip("_")
     return name
 
 
@@ -140,7 +149,7 @@ def _setup_ik(data, arm_obj, deform, col, log):
     # become IK; the foot roll and spline handles stay FK.
     chains = []
     for ik in data.ik_handles():
-        if ik.solver != 'ikRPsolver':
+        if _split_namespace(ik.solver or '')[1] != 'ikRPsolver':
             continue
         s = bl_name(_strip_ik(ik.start_joint))
         e = bl_name(_strip_ik(ik.eff_parent))

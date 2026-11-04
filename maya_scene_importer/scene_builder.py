@@ -20,7 +20,7 @@ import numpy as np
 from mathutils import Matrix, Vector, Euler
 
 from .ma_model import extract
-from . import ma_parser
+from . import ma_parser, ma_refs
 
 
 def bl_name(name):
@@ -183,14 +183,14 @@ def _build(filepath, opts, report, progress, parse=None):
 
     _listing.cache_clear()           # folders may have changed since last import
     scene = (parse or ma_parser.parse_file)(filepath)
+    if scene.reference_info:
+        try:
+            ma_refs.load_references(scene, filepath)
+        except Exception as exc:     # noqa: BLE001 - keep the main scene
+            log('WARNING', "referenced files could not be loaded: %s" % exc)
     if not scene.nodes:
         raise ValueError("no Maya nodes found: the file is empty or is not a "
                          "Maya ASCII scene")
-    if scene.references:
-        log('WARNING', "this scene references %d other file(s) that are not "
-            "loaded (%s)" % (len(scene.references),
-                             ", ".join(os.path.basename(r)
-                                       for r in scene.references[:3])))
     if scene.skipped:
         log('WARNING', "%d damaged statement(s) were skipped; the file may be "
             "truncated or corrupt" % scene.skipped)
@@ -225,7 +225,7 @@ def _build(filepath, opts, report, progress, parse=None):
     materials = data.materials() if opts.import_materials else {}
     for sg, md in materials.items():
         try:
-            mat_lookup[sg] = _build_material(md, basedir)
+            mat_lookup[sg] = _build_material(md, md.basedir or basedir)
             stats['materials'] += 1
         except Exception as exc:                       # never abort the import
             log('WARNING', "material '%s' failed: %s" % (sg, exc))

@@ -93,6 +93,8 @@ class MaterialData:
         self.maya_textures = {}       # slot -> original path string
         self.normal_mode = 1          # bump2d: 0 bump, 1 tangent, 2 object space
         self.bump_depth = 1.0
+        self.basedir = None           # folder of the referenced file that
+                                      # holds this material; None: the scene
         self.metalness = None         # None: shader has no such value
         self.roughness = None
         self.emission_strength = 1.0  # Maya's incandescence has no weight
@@ -714,6 +716,7 @@ class MAImport:
     def _material_data(self, node):
         md = MaterialData(node.name)
         md.node_type = node.ntype
+        md.basedir = node.origin
         for a in self._COLOR_ATTRS:
             c = as_floats(node.attr_tokens(a))
             if len(c) >= 3:
@@ -1134,6 +1137,7 @@ def _texture_prefix(path):
 
 
 def _texture_prefix_from_name(name):
+    name = name.rpartition(':')[2]          # a referenced material's namespace
     n = re.sub(r'(_MAT|_mat|Mat|_Material|SG)$', '', name)
     return n
 

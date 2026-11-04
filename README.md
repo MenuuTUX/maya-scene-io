@@ -132,7 +132,8 @@ evaluates on load. So you pick an engine per import.
 | How it works | Parses `.ma` and `.mb` directly in Python | Runs a local `mayapy`, has Maya export the scene to FBX, then Blender imports the FBX |
 | Works offline | Yes | Yes |
 | Old Maya files | Yes | Yes, any version |
-| Plugin nodes and references | No | Yes |
+| Plugin nodes | No | Yes |
+| Referenced files | Yes, `.ma` scenes only; edits not applied | Yes |
 | Construction-history-only meshes | Skipped with a warning | Yes |
 | Materials | Lambert, blinn, phong, rebuilt as Principled BSDF | Whatever Maya exports to FBX |
 | `.mb` import | Yes, newer than `.ma` support | Yes |
@@ -197,6 +198,7 @@ versions.
 
 - With no Maya you get standard files only. Plugin nodes, and meshes stored only as construction history (a `polyCube` with no baked geometry, for example), need the Maya bridge. Delete history in Maya to bake them. The import warns about each mesh it skips for this reason.
 - Native `.mb` import is new. It was checked against `.mb` files from Maya 2014 and 2020, and the older 32-bit format against a Maya 2009 file that has no baked mesh. It does not read blend shapes, vertex colours or creases yet. Lights, `file` textures and `bump2d` nodes are recognised only when they keep Maya's default names (`spotLightShape1`, `file3`). Renamed ones come in without a type. Writing `.mb` still needs Maya.
+- Referenced files are loaded for `.ma` scenes, each under its namespace (`rig:body`). The scene's own edits to a reference, such as moving the rig into place, are not applied, and the import warns when it sees them. A `.mb` scene does not load its references yet. Reference paths are tried as written, then under the scene's folder and the two above it, so a file copied from a server still resolves if it sits nearby.
 - Control-rig logic does not transfer, as described above.
 - Driven shape keys do not drive. The 8 shape keys on the demo character are pose correctives. They import, but nothing in Blender triggers them as the joints move.
 - The native parser was developed against Maya 2023. Other versions should be fine for geometry and skeletons, since those formats are stable. Please open an issue if something breaks.

@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_FILES = (
     "ui.py",
     "ma_parser.py",
+    "ma_refs.py",
     "mb_parser.py",
     "ma_model.py",
     "scene_builder.py",
