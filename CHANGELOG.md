@@ -5,8 +5,28 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 
 ## Unreleased
 
+## 1.1.0 - 2026-11-04
+
 ### Fixed
 
+- Animation was keyed only on Maya's key frames, and Blender blended location
+  and rotation separately in between. A door turning about its hinge drifted
+  off it mid-swing (up to 5 m in the Lantana sample). Every frame of the key
+  range is now keyed from the full Maya matrix.
+- Curves were sampled as straight lines. They now follow each key's Maya
+  tangent type: linear, flat, stepped, spline, and the smooth auto, clamped
+  and plateau types, which ease in and out without overshooting.
+- A mesh under an animated group (a door and its handle in a `DoorSet`) did
+  not move, and an animated group with no mesh of its own was skipped.
+- Objects were built from translate, rotate and scale only. Maya's rotate and
+  scale pivots, the pivot translates it adds when a pivot moves, the rotate
+  axis and shear were ignored, so any object with a moved pivot landed in the
+  wrong place, sometimes metres away. In the Lantana sample 6,057 of 10,231
+  transforms carry a pivot translate. Transforms now use Maya's full matrix,
+  for `.ma` and `.mb` alike.
+- An animated scene opened on its first frame instead of the frame it was
+  saved on (`time1.outTime`), so animated objects such as drawers sat in a
+  different pose than in Maya.
 - A `.ma` saved with a working unit other than centimetres or degrees
   (`currentUnit -l meter`, `inch`, `-a radian`, ...) came in at the wrong size
   and rotation: translations, joint orients, camera clip planes, spot cone

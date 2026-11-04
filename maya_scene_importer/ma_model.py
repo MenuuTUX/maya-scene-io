@@ -926,13 +926,25 @@ class MAImport:
         return out
 
     def _anim_keys(self, cv, ctype):
+        """[(frame, value, in_slope, out_slope)], slopes in value per frame
+        from each key's Maya tangent type (``_STEP`` for a stepped key)."""
         fl = as_floats(cv.attr_tokens('ktv'))
         # TL / TA values are in the scene's UI units; TU / TT are unitless
         k = {'animCurveTL': self.scene.cm_per_unit,
              'animCurveTA': self.scene.deg_per_unit}.get(ctype, 1.0)
-        keys = [(fl[i], fl[i + 1] * k) for i in range(0, len(fl) - 1, 2)]
-        keys.sort(key=lambda k: k[0])
-        return keys
+        keys = sorted((fl[i], fl[i + 1] * k) for i in range(0, len(fl) - 1, 2))
+        default = as_floats(cv.attr_tokens('tan'))
+        default = int(default[0]) if default else _AUTO
+        kit = [int(v) for v in as_floats(cv.attr_tokens('kit'))]
+        kot = [int(v) for v in as_floats(cv.attr_tokens('kot'))]
+        out = []
+        for i, (f, v) in enumerate(keys):
+            tin = kit[i] if i < len(kit) else default
+            tout = kot[i] if i < len(kot) else default
+            out.append((f, v, _slope(keys, i, tin, -1),
+                        _STEP if tout in (_STEP_TYPE, _STEP_NEXT)
+                        else _slope(keys, i, tout, 1)))
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -942,6 +954,40 @@ def _number(node, attr, default):
     """First number of an attribute, or ``default`` if absent or damaged."""
     values = as_floats(node.attr_tokens(attr))
     return values[0] if values and math.isfinite(values[0]) else default
+
+
+# Maya tangent types (animCurve .tan / .kit / .kot)
+_LINEAR, _FLAT, _STEP_TYPE, _SPLINE, _STEP_NEXT, _AUTO = 2, 3, 4, 9, 17, 18
+_STEP = 'step'
+
+
+def _slope(keys, i, ttype, side):
+    """Tangent slope (value per frame) of key ``i`` on its in (-1) or out (1)
+    side.  Linear points at the neighbour; flat is 0; spline uses both
+    neighbours; the smooth types Maya uses by default (auto, clamped,
+    plateau) are flat on an end or a peak and never overshoot."""
+    n = len(keys)
+    f, v = keys[i]
+    if ttype == _FLAT or n < 2:
+        return 0.0
+    if ttype == _LINEAR:
+        j = i + side if 0 <= i + side < n else i - side
+        fj, vj = keys[j]
+        return (vj - v) / (fj - f) if fj != f else 0.0
+    if i == 0 or i == n - 1:
+        if ttype != _SPLINE:
+            return 0.0
+        fj, vj = keys[1] if i == 0 else keys[-2]
+        return (vj - v) / (fj - f) if fj != f else 0.0
+    (f0, v0), (f1, v1) = keys[i - 1], keys[i + 1]
+    s = (v1 - v0) / (f1 - f0) if f1 != f0 else 0.0
+    if ttype == _SPLINE:
+        return s
+    if (v - v0) * (v1 - v) <= 0:
+        return 0.0                         # a peak or a plateau stays flat
+    # limit the slope so neither neighbouring segment overshoots
+    lim = 3 * min(abs((v - v0) / (f - f0)), abs((v1 - v) / (f1 - f)))
+    return max(-lim, min(lim, s))
 
 
 def _pad3(t):

@@ -48,9 +48,18 @@ and the `mayapy` setting out, with `marketplace/__init__.py` as its entry point:
 python scripts/build_native_extension.py --output-dir dist
 ```
 
-To prepare a release, bump the version in
-`maya_scene_importer/blender_manifest.toml`, build the ZIP with the command
-above, then attach it to a GitHub Release tagged `v1.1.0` (or the next version).
+To release, bump the version in `maya_scene_importer/blender_manifest.toml`,
+move the changelog's `Unreleased` entries under the new version, and push a tag:
+
+```
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+`.github/workflows/release.yml` then builds both ZIPs, installs each one in
+Blender on Linux, macOS and Windows, and attaches them to a GitHub Release with
+the changelog notes. The add-on is pure Python, so one ZIP covers every
+platform. Upload the native ZIP (`maya_ascii_scene_io-x.y.z.zip`) to
+extensions.blender.org by hand.
 
 ## Style
 

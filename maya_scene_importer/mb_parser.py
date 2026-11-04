@@ -197,8 +197,23 @@ class MBReader:
                 name = self.data[cb:ce].split(b'\0')[0].decode('utf-8', 'replace')
                 name = self.ma._resolve(name.lstrip(':'))
                 node = self.scene.nodes.get(name)
+                if node is None and name == 'time1':
+                    self._time(b, e)
+                    return
             elif node is not None and gtype is None:
                 self._attr(node, tag, self.data[cb:ce])
+
+    def _time(self, b, e):
+        """time1.outTime, in ticks: the frame the scene was saved on."""
+        for tag, gtype, cb, ce in self.children(b, e):
+            buf = self.data[cb:ce]
+            if tag == b'DBLE' and buf.startswith(b'o\0'):
+                p = buf[3:]
+                fmt = {4: '>i', 8: '>q'}.get(len(p))
+                if fmt:
+                    ticks = struct.unpack(fmt, p)[0]
+                    self.scene.current_frame = ticks / (self.tick_rate /
+                                                        self.fps)
 
     # -- nodes ------------------------------------------------------------
     def _node(self, code, b, e):
