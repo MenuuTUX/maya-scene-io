@@ -35,7 +35,9 @@ jobs:
           echo "$RUNNER_TEMP/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
 
       - name: Build full edition (GitHub release)
-        run: blender --background --command extension build --source-dir maya_scene_importer --output-dir dist
+        run: |
+          mkdir -p dist
+          blender --background --command extension build --source-dir maya_scene_importer --output-dir dist
 
       - name: Build native edition (Blender Extensions)
         run: python3 scripts/build_native_extension.py --blender blender --output-dir dist
