@@ -28,6 +28,15 @@
 
 ---
 
+## Who this is for
+
+Use this when you have Maya files and no Maya: a rig you downloaded, an old project, a scene from a
+client. It reads `.ma` and `.mb` in Python and builds the scene in Blender.
+
+If you do own Maya, export FBX, USD or Alembic from Maya instead. That route is free, supported by
+Autodesk, and handles everything Maya can evaluate. The optional Maya bridge in this add-on only
+automates the FBX export for you.
+
 ## Demo
 
 One `.ma` file in, a textured and skinned character out. The scene below is a Maya Advanced Skeleton rig
@@ -122,6 +131,8 @@ in the demo above.
 
 ## Two engines
 
+Native is what this add-on is for. The Maya bridge is a convenience for people who already have Maya.
+
 Reading any Maya file without Maya is not possible. Files can reference plugin nodes, such as Arnold or
 custom rigs, that no outside tool can decode. Some meshes exist only as construction history that Maya
 evaluates on load. So you pick an engine per import.
@@ -139,8 +150,8 @@ evaluates on load. So you pick an engine per import.
 | `.mb` export | No | Yes |
 
 `Auto`, the default, uses Native, except that a `.mb` goes through the bridge when Maya is installed.
-If the bridge fails, the add-on falls back to Native. The bridge is the same approach the commercial
-Maya importers use.
+If the bridge fails, the add-on falls back to Native. The bridge saves you a manual FBX export and
+adds nothing you could not do by hand in Maya.
 
 The native engine is best effort. It handles the standard data on most files, but unusual nodes or
 exotic materials may come in partially.
@@ -200,7 +211,7 @@ versions.
 - Control-rig logic does not transfer, as described above.
 - Driven shape keys do not drive. The 8 shape keys on the demo character are pose correctives. They import, but nothing in Blender triggers them as the joints move.
 - The native parser was developed against Maya 2023. Other versions should be fine for geometry and skeletons, since those formats are stable. Please open an issue if something breaks.
-- Materials beyond lambert, blinn and phong, such as Arnold aiStandardSurface, import as a plain material on the native path. Use the Maya bridge for those.
+- Materials on the native path keep base colour, emission, transparency, and a normal or bump map. Metalness and roughness come only from texture files named like `Body_Metallic.png` and `Body_Roughness.png` next to the scene. Scalar metalness, roughness and opacity values on shaders such as Arnold aiStandardSurface are not read, so those materials come in as a base colour with no metal or gloss. Whether the Maya bridge keeps them depends on what Maya's FBX exporter writes for that shader.
 
 ## Building from source
 
