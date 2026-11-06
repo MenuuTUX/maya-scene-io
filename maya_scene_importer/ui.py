@@ -180,6 +180,12 @@ class EXPORT_SCENE_OT_maya_ascii(bpy.types.Operator, ExportHelper):
     export_materials: BoolProperty(name="Materials", default=True)
     export_skin: BoolProperty(name="Skin Weights", default=True)
     export_shapekeys: BoolProperty(name="Blend Shapes (Shape Keys)", default=True)
+    export_cameras: BoolProperty(name="Cameras", default=True)
+    export_lights: BoolProperty(name="Lights", default=True)
+    export_animation: BoolProperty(
+        name="Animation", default=True,
+        description="Bake object, bone, camera and shape key animation over "
+                    "the scene frame range to Maya animCurves")
 
     def draw(self, context):
         layout = self.layout
@@ -196,6 +202,9 @@ class EXPORT_SCENE_OT_maya_ascii(bpy.types.Operator, ExportHelper):
         col.prop(self, "export_materials")
         col.prop(self, "export_skin")
         col.prop(self, "export_shapekeys")
+        col.prop(self, "export_cameras")
+        col.prop(self, "export_lights")
+        col.prop(self, "export_animation")
 
     def execute(self, context):
         import time

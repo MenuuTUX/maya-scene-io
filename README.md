@@ -100,11 +100,12 @@ one-click buttons.
 | | Import | Export |
 | --- | --- | --- |
 | Meshes | Vertices, polygons, all UV sets, vertex colours, edge hardness, per-face materials | Placed in world space, with UVs, normals, vertex colours, per-face materials and visibility |
-| Materials | Principled BSDF, with PBR textures sitting next to the file wired up automatically | Per-face material assignment |
-| Skeleton | Joint hierarchy at bind pose, deform bones split into their own bone collection | Skeleton with its hierarchy |
-| Skin | Weights as vertex groups plus an Armature modifier | Skin weights |
+| Materials | Principled BSDF, with PBR textures sitting next to the file wired up automatically | standardSurface with base colour, metalness, roughness, emission, opacity and normal or bump maps, textures included |
+| Skeleton | Joint hierarchy at bind pose, deform bones split into their own bone collection | Skeleton with its hierarchy and bind pose |
+| Skin | Weights as vertex groups plus an Armature modifier | skinCluster with weights and bind matrices |
 | Shapes | Blend shapes as shape keys | Blend shapes with their weights |
-| Scene | Cameras, lights, time-based animation, Maya visibility sorted into collections | |
+| Scene | Cameras, lights, Maya visibility sorted into collections | Cameras, lights, frame rate and playback range |
+| Animation | Time-based animCurves on objects and joints | Objects, bones, cameras, focal length and shape key weights, baked one key per frame |
 | Rig | Optional FK + IK control rig generated from the file | |
 
 Both engines bring over geometry, UVs, the skeleton at its bind pose, skin weights and blend shapes.
@@ -135,7 +136,7 @@ evaluates on load. So you pick an engine per import.
 | Plugin nodes | No | Yes |
 | Referenced files | Yes, `.ma` scenes only; edits not applied | Yes |
 | Construction-history-only meshes | Skipped with a warning | Yes |
-| Materials | Lambert, blinn, phong, rebuilt as Principled BSDF | Whatever Maya exports to FBX |
+| Materials | Lambert, blinn, phong, standardSurface and aiStandardSurface, rebuilt as Principled BSDF | Whatever Maya exports to FBX |
 | `.mb` import | Yes, newer than `.ma` support | Yes |
 | `.mb` export | No | Yes |
 

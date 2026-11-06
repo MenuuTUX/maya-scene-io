@@ -7,6 +7,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 
 ### Fixed
 
+- Exported skeletons had their child joints placed in metres instead of
+  centimetres, so in Maya the skeleton was a hundredth of its size. Only
+  re-importing into Blender looked right, because the importer reads the
+  stored bind matrices.
+- Exported skinClusters had no bind pre-matrices and no input mesh, so Maya
+  could not deform the mesh. Skinned and blend-shaped meshes now keep their
+  geometry on an intermediate `Orig` shape that feeds the deformers, as Maya
+  saves them.
+
 - A `.ma` saved with a working unit other than centimetres or degrees
   (`currentUnit -l meter`, `inch`, `-a radian`, ...) came in at the wrong size
   and rotation: translations, joint orients, camera clip planes, spot cone
@@ -87,6 +96,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
   dialog.
 
 ### Added
+
+- `.ma` export now writes animation. Object, bone, camera and shape key motion
+  is baked over the scene frame range to one key per frame, along with the
+  camera focal length. The frame rate and playback range come along too.
+- `.ma` export now writes cameras (focal length, film back, clip planes,
+  orthographic width) and lights (directional, point, spot and area, with
+  colour, intensity and spot cone).
+- `.ma` export writes materials as standardSurface instead of lambert: base
+  colour, metalness, roughness, emission, opacity and a normal or bump map,
+  each with its texture. Metal and roughness packed into one image through a
+  Separate Color node (as glTF imports do) are wired to the right channel.
+  Non-colour maps are marked Raw.
+- Cameras, Lights and Animation switches in the export options.
 
 - Files a `.ma` scene references are now loaded and merged into the import,
   each node under its reference's namespace (`rig:body`), as Maya does. Before,
