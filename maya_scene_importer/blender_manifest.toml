@@ -4,7 +4,7 @@ id = "maya_scene_importer"
 version = "1.1.0"
 name = "Maya Scene IO (.ma / .mb)"
 tagline = "Import & export Maya scenes: mesh, rig, skin, anim, materials"
-maintainer = "Shibashish Das <shibashish.das07@gmail.com>"
+maintainer = "MenuuTUX"
 type = "add-on"
 
 tags = ["Import-Export", "Rigging", "Pipeline"]
