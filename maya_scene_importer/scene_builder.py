@@ -11,6 +11,7 @@ deformation is correct with every object left at the identity transform.
 import math
 import os
 import re
+import sys
 
 import functools
 import zlib
@@ -19,7 +20,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector, Euler
 
-from .ma_model import extract
+from .ma_model import extract, _OFF
 from . import ma_parser
 
 
@@ -213,6 +214,8 @@ def _build(filepath, opts, report, progress, parse=None):
     for note in getattr(scene, 'notes', ()):
         log('WARNING', note)
     data = extract(scene)
+    kit_layers = _kit_layers()
+    data.inherit_hidden = kit_layers is None   # the kit hides children of hidden parents / layers itself
     gm = _global_matrix(getattr(opts, 'global_scale', 0.01),
                         getattr(opts, 'apply_axis', True))
     gm3 = gm.to_3x3()
@@ -366,6 +369,18 @@ def _build(filepath, opts, report, progress, parse=None):
             import traceback
             traceback.print_exc()
             log('WARNING', "animation import failed: %s" % exc)
+
+    # -- Maya groups (DAG parents) and display layers ----------------------
+    # after the animation: a child under a keyed parent stays unparented
+    built = {**mesh_objs, **placed}
+    try:
+        _build_hierarchy(scene, built, gm, node_world, col('Groups'))
+        if kit_layers is not None:
+            _build_layers(scene, built, kit_layers)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        log('WARNING', "groups / display layers failed: %s" % exc)
 
     # -- experimental rig (control curves + constraints + IK) -------------
     if getattr(opts, 'experimental_rig', False) and arm_obj:
@@ -924,6 +939,72 @@ def _build_material(md, basedir):
 # ---------------------------------------------------------------------------
 # cameras / lights / animation
 # ---------------------------------------------------------------------------
+def _build_hierarchy(scene, objects, gm, node_world, collection):
+    """Parent objects as in Maya's DAG; a plain group transform becomes an empty.
+    Each child keeps its baked world matrix (parent inverse = the parent's world),
+    so world-space animation keys stay put. Objects already on a bone are left, and
+    so is a child of a keyed parent: its world keys already hold the parent's motion.
+    shortcut: a nested group shows world, not Maya-local, values; fine for static groups."""
+    done = set()
+
+    def link(name):
+        obj = objects.get(name)
+        node = scene.nodes.get(name)
+        if obj is None:
+            if node is None or node.ntype != 'transform':
+                return None               # joints and missing nodes stay unparented
+            obj = bpy.data.objects.new(name, None)
+            obj.empty_display_type = 'PLAIN_AXES'
+            obj.empty_display_size = gm.median_scale   # one Maya unit, like the kit's Group
+            # conjugate, not gm @ wm: an untransformed Maya group stays untransformed
+            obj.matrix_world = gm @ node_world.get(name, Matrix.Identity(4)) @ gm.inverted()
+            collection.objects.link(obj)
+            v = node.attr_tokens('v')
+            obj.hide_viewport = bool(v and v[0] in _OFF)
+            objects[name] = obj
+        if name not in done:
+            done.add(name)
+            if obj.parent is None and node is not None and node.parent:
+                parent = link(node.parent)
+                if parent is not None and parent.animation_data is None:
+                    obj.parent = parent
+                    obj.matrix_parent_inverse = parent.matrix_world.inverted()
+        return obj
+
+    for name in list(objects):
+        link(name)
+
+
+def _kit_layers():
+    """The Maya Workflow Kit's display-layer module when that add-on is on, else None."""
+    if not hasattr(bpy.types.Collection, 'allset_layer'):
+        return None
+    return next((m for n, m in list(sys.modules.items())
+                 if n.endswith('.allset.ui.layer_editor')), None)
+
+
+def _build_layers(scene, objects, le):
+    """Maya display layers -> kit display layers (members, V, P, display type, order)."""
+    base = max((c.allset_layer.order for c in le.layers(bpy.context.scene)), default=0)
+    for layer in scene.of_type('displayLayer'):
+        members = [objects[n] for n, _ in scene.dests_of(layer.name, 'di')
+                   if n in objects]
+        if not members:
+            continue                      # defaultLayer / empty layers
+
+        def tok(attr, default):
+            t = layer.attr_tokens(attr)
+            return t[0] if t else default
+        coll = le.new_layer(bpy.context.scene, members)
+        coll.name = layer.name
+        st = coll.allset_layer
+        st.order = base + int(float(tok('do', 0)))
+        dt = int(float(tok('dt', 0)))
+        st.display_type = ('NORMAL', 'TEMPLATE', 'REFERENCE')[dt if 0 <= dt <= 2 else 0]
+        st.playback = tok('hfp', 'no') in _OFF
+        st.visible = tok('v', 'yes') not in _OFF
+
+
 def _placed(obj, name, gm, node_world, collection):
     wm = node_world.get(name)
     obj.matrix_world = _convert(gm, wm) if wm is not None else gm
