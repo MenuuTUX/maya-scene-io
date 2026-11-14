@@ -349,17 +349,6 @@ def _build(filepath, opts, report, progress, parse=None):
             except Exception as exc:
                 log('WARNING', "light '%s' failed: %s" % (lt.get('name'), exc))
 
-    # -- Maya groups (DAG parents) and display layers ----------------------
-    built = {**mesh_objs, **placed}
-    try:
-        _build_hierarchy(scene, built, gm, node_world, col('Groups'))
-        if kit_layers is not None:
-            _build_layers(scene, built, kit_layers)
-    except Exception as exc:
-        import traceback
-        traceback.print_exc()
-        log('WARNING', "groups / display layers failed: %s" % exc)
-
     progress(95)
     # -- time-based animation --------------------------------------------
     if getattr(opts, 'import_animation', True):
@@ -380,6 +369,18 @@ def _build(filepath, opts, report, progress, parse=None):
             import traceback
             traceback.print_exc()
             log('WARNING', "animation import failed: %s" % exc)
+
+    # -- Maya groups (DAG parents) and display layers ----------------------
+    # after the animation: a child under a keyed parent stays unparented
+    built = {**mesh_objs, **placed}
+    try:
+        _build_hierarchy(scene, built, gm, node_world, col('Groups'))
+        if kit_layers is not None:
+            _build_layers(scene, built, kit_layers)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        log('WARNING', "groups / display layers failed: %s" % exc)
 
     # -- experimental rig (control curves + constraints + IK) -------------
     if getattr(opts, 'experimental_rig', False) and arm_obj:
@@ -941,7 +942,8 @@ def _build_material(md, basedir):
 def _build_hierarchy(scene, objects, gm, node_world, collection):
     """Parent objects as in Maya's DAG; a plain group transform becomes an empty.
     Each child keeps its baked world matrix (parent inverse = the parent's world),
-    so world-space animation keys stay put. Objects already on a bone are left.
+    so world-space animation keys stay put. Objects already on a bone are left, and
+    so is a child of a keyed parent: its world keys already hold the parent's motion.
     shortcut: a nested group shows world, not Maya-local, values; fine for static groups."""
     done = set()
 
@@ -964,7 +966,7 @@ def _build_hierarchy(scene, objects, gm, node_world, collection):
             done.add(name)
             if obj.parent is None and node is not None and node.parent:
                 parent = link(node.parent)
-                if parent is not None:
+                if parent is not None and parent.animation_data is None:
                     obj.parent = parent
                     obj.matrix_parent_inverse = parent.matrix_world.inverted()
         return obj
