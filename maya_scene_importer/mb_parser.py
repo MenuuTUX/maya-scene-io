@@ -292,7 +292,14 @@ class MBReader:
             return
         name = buf[:z].decode('utf-8', 'replace')
         p = buf[z + 2:]                     # skip the flag byte after the name
-        values = self._values(node, tag, name, p)
+        try:
+            values = self._values(node, tag, name, p)
+        except (struct.error, IndexError, ValueError, OverflowError):
+            # Attribute chunks are bounded: later attributes can still be read.
+            self.scene.skipped += 1
+            self.scene.notes.append("node '%s': damaged attribute '%s' skipped"
+                                    % (node.name, name))
+            return
         if values is not None:
             node.set_attrs.append((name, None, values))
 

@@ -158,7 +158,8 @@ def _reconstruct_geometry(mesh):
     # polyFaces -> face vertex loops + per uv-set face indices
     fc = mesh.attr_tokens('fc')
     faces = []
-    n_uvsets = max(1, len(mesh.attr('uvst')))
+    uvset_ids = sorted({int(m.group(1)) for name, _, _ in mesh.attr('uvst')
+                        if (m := re.match(r'uvst\[(\d+)\]', name))})
     faces_uv = []     # list per face of dict(uvset -> [uvidx,...])
     faces_col = []    # list per face of dict(colour set -> [colour id,...])
     try:
@@ -169,7 +170,7 @@ def _reconstruct_geometry(mesh):
     except (IndexError, ValueError, TypeError, OverflowError):
         problems.append("face data is damaged; %d faces kept" % len(faces))
 
-    return verts, edges, faces, faces_uv, n_uvsets, faces_col, problems
+    return verts, edges, faces, faces_uv, uvset_ids, faces_col, problems
 
 
 def _read_faces(fc, edges, faces, faces_uv, faces_col):
@@ -223,7 +224,7 @@ def _read_faces(fc, edges, faces, faces_uv, faces_col):
 
 
 def _color_sets(mesh):
-    """[(name, [(r, g, b, a), ...])] for every colour set, in set order."""
+    """[(Maya index, (name, colors))] in set order, preserving sparse IDs."""
     sets = {}
     for ename, atype, toks in mesh.set_attrs:
         m = re.match(r'clst\[(\d+)\]\.(clsn|clsp)', ename)
@@ -237,7 +238,7 @@ def _color_sets(mesh):
         else:
             fl = as_floats(values)
             entry[1].extend(tuple(fl[j:j + 4]) for j in range(0, len(fl) - 3, 4))
-    return [(name, colors) for _, (name, colors) in sorted(sets.items())]
+    return sorted(sets.items())
 
 
 def _uv_coords(mesh, uvset_index):
@@ -371,10 +372,10 @@ class MAImport:
         md.render_shape = render
         gnode = self.scene.nodes[geo]
         (md.verts, md.edges, md.faces,
-         faces_uv, n_uvsets, faces_col, problems) = _reconstruct_geometry(gnode)
+         faces_uv, uvset_ids, faces_col, problems) = _reconstruct_geometry(gnode)
         self.warnings.extend("mesh '%s': %s" % (md.name, p) for p in problems)
 
-        for s in range(n_uvsets):
+        for s in uvset_ids:
             set_name, coords = _uv_coords(gnode, s)
             if not coords:
                 continue
@@ -382,7 +383,7 @@ class MAImport:
             md.uv_sets.append((set_name, coords))
             md.face_uv_sets.append(per_face)
 
-        for si, (set_name, colors) in enumerate(_color_sets(gnode)):
+        for si, (set_name, colors) in _color_sets(gnode):
             if colors:
                 md.color_sets.append(
                     (set_name, colors, [fc_.get(si) for fc_ in faces_col]))
