@@ -276,6 +276,9 @@ class MAImport:
         self._geom_flow = None
         self._skin_of_shape = None
         self._hidden_by_layer = None
+        # True: a node counts as hidden when a parent or its display layer is
+        # off (Blender has no such inheritance); False: only its own .v
+        self.inherit_hidden = True
         self.warnings = []             # damaged items skipped along the way
 
     # -- relationship helpers --------------------------------------------
@@ -418,6 +421,9 @@ class MAImport:
 
     def _hidden_by_visibility(self, node_name):
         cur = self.scene.nodes.get(node_name)
+        if not self.inherit_hidden:    # parents and layers are rebuilt and hide the rest
+            v = cur.attr_tokens('v') if cur is not None else None
+            return bool(v and v[0] in _OFF)
         depth = 0
         while cur is not None and depth < 256:
             v = cur.attr_tokens('v')
