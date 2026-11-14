@@ -208,7 +208,8 @@ _MAX_OPEN_STRING = 8000000   # a quote left open this long is a stray, not a str
 
 def _odd_quotes(fragment):
     """True when ``fragment`` leaves a double-quoted string open."""
-    return (fragment.count('"') - fragment.count('\\"')) % 2 == 1
+    # A quote after an even number of backslashes closes the string.
+    return re.findall(r'\\.|"', fragment).count('"') % 2 == 1
 
 
 def _iter_statements(lines):
